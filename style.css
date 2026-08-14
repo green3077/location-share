@@ -181,6 +181,12 @@ input[type="text"] {
 .member-dot-offline { background: var(--offline); }
 
 .member-name { flex: 1; font-weight: 600; }
+.member-name-clickable {
+  cursor: pointer;
+  color: var(--primary);
+  -webkit-tap-highlight-color: transparent;
+}
+.member-name-clickable:active { opacity: 0.6; }
 .member-time { color: var(--text-dim); font-size: 13px; }
 
 .toggle-row {

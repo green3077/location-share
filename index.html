@@ -12,15 +12,28 @@
 <div id="toast-container"></div>
 <div id="confirm-overlay" class="hidden"></div>
 
+<!-- 접속 화면 (가족/지인만 아는 공용 아이디/비밀번호) -->
+<div id="screen-login" class="screen">
+  <div class="card consent-card">
+    <h1>위치 공유 앱</h1>
+    <p class="lead">가족/지인만 사용할 수 있도록 아이디와 비밀번호를 입력해주세요.</p>
+    <label class="field-label">아이디</label>
+    <input type="text" id="loginId" placeholder="아이디" autocomplete="off">
+    <label class="field-label">비밀번호</label>
+    <input type="password" id="loginPassword" placeholder="비밀번호" autocomplete="off">
+    <button id="btnLoginSubmit" class="btn-primary">입장하기</button>
+  </div>
+</div>
+
 <!-- 동의 화면 -->
-<div id="screen-consent" class="screen">
+<div id="screen-consent" class="screen hidden">
   <div class="card consent-card">
     <h1>위치 공유 앱</h1>
     <p class="lead">가족/지인과 서로의 위치를 실시간으로 공유하는 앱입니다.</p>
     <ul class="consent-list">
       <li>내 위치(위도/경도)는 같은 그룹 코드를 사용하는 사람에게만 보여집니다.</li>
       <li>설치된 앱에서는 화면이 꺼지거나 다른 앱으로 전환해도 계속 위치가 공유됩니다 (화면 상단에 "위치 공유 중" 알림이 표시됩니다). 웹브라우저로 열었을 때는 이 페이지가 열려있는 동안만 공유됩니다.</li>
-      <li>앱을 완전히 종료(최근 앱 목록에서 제거)하거나 폰을 재시작하면 공유가 멈추며, 다시 열어야 재개됩니다.</li>
+      <li>폰을 재시작해도 마지막 설정을 기억해 공유를 자동으로 다시 시작합니다. 다만 앱을 완전히 종료(최근 앱 목록에서 직접 제거)하면 공유가 멈추며, 다시 열어야 재개됩니다.</li>
       <li>설정 화면에서 언제든지 공유를 끌 수 있습니다.</li>
       <li>동의는 최초 1회만 받으며, 이후에는 다시 묻지 않습니다.</li>
     </ul>

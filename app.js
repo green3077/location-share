@@ -1,3 +1,6 @@
+const GATE_KEY = "ls_gate_v1";
+const ACCESS_ID = "6003";
+const ACCESS_PASSWORD = "6003";
 const CONSENT_KEY = "ls_consent_v1";
 const PROFILE_KEY = "ls_profile_v1";
 const UPDATE_INTERVAL_MS = 3 * 60 * 1000; // 3분마다 위치 갱신 (웹 브라우저 탭이 열려있을 때만, foreground 전용)
@@ -10,6 +13,7 @@ const NATIVE_DISTANCE_FILTER_M = 30; // 네이티브 앱: 이 거리(m) 이상 �
 const IS_NATIVE = !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
 const BackgroundGeolocation = IS_NATIVE ? window.Capacitor.registerPlugin("BackgroundGeolocation") : null;
 const LocalNotifications = IS_NATIVE ? window.Capacitor.registerPlugin("LocalNotifications") : null;
+const NativeProfileBridge = IS_NATIVE ? window.Capacitor.registerPlugin("NativeProfileBridge") : null;
 let bgWatcherId = null;
 
 let db = null;
@@ -27,6 +31,13 @@ function showScreen(id) {
   $("#" + id).classList.remove("hidden");
 }
 
+function getGatePassed() {
+  return localStorage.getItem(GATE_KEY) === "1";
+}
+function setGatePassed() {
+  localStorage.setItem(GATE_KEY, "1");
+}
+
 function getConsent() {
   return localStorage.getItem(CONSENT_KEY) === "1";
 }
@@ -41,6 +52,20 @@ function getProfile() {
 function saveProfile(p) {
   profile = p;
   localStorage.setItem(PROFILE_KEY, JSON.stringify(p));
+  syncNativeProfile();
+}
+
+// 재부팅 직후 BootReceiver(순수 네이티브, WebView 없음)가 이 값을 읽어 공유를 자동 재개할 수 있도록
+// SharedPreferences에 그대로 미러링한다. localStorage는 그 시점에 접근 불가능하므로 별도 통로가 필요하다.
+function syncNativeProfile() {
+  if (!IS_NATIVE || !NativeProfileBridge || !profile) return;
+  NativeProfileBridge.save({
+    sharingEnabled: !!profile.sharingEnabled,
+    memberId: profile.memberId,
+    name: profile.name,
+    groupCode: profile.groupCode,
+    databaseURL: firebaseConfig.databaseURL,
+  }).catch((e) => console.warn("syncNativeProfile failed", e));
 }
 
 function generateMemberId() {
@@ -68,6 +93,15 @@ function init() {
 
   bindStaticHandlers();
 
+  if (!getGatePassed()) {
+    showScreen("screen-login");
+    return;
+  }
+  proceedAfterGate();
+}
+
+// 접속 화면(공용 아이디/비밀번호) 통과 후 항상 이 경로를 거친다.
+function proceedAfterGate() {
   if (!getConsent()) {
     showScreen("screen-consent");
     return;
@@ -82,6 +116,17 @@ function init() {
 }
 
 function bindStaticHandlers() {
+  $("#btnLoginSubmit").addEventListener("click", () => {
+    const id = $("#loginId").value.trim();
+    const password = $("#loginPassword").value;
+    if (id !== ACCESS_ID || password !== ACCESS_PASSWORD) {
+      toast("아이디 또는 비밀번호가 올바르지 않습니다.");
+      return;
+    }
+    setGatePassed();
+    proceedAfterGate();
+  });
+
   $("#consentCheckbox").addEventListener("change", (e) => {
     $("#btnConsent").disabled = !e.target.checked;
   });
@@ -159,6 +204,7 @@ function bindStaticHandlers() {
 }
 
 function startApp() {
+  syncNativeProfile(); // 기존 설치본(이 필드가 생기기 전)도 네이티브 저장소에 반영
   $("#groupCodeDisplay").textContent = profile.groupCode;
   initMap();
   startListening();
@@ -193,6 +239,11 @@ function upsertMarker(memberId, name, lat, lng, isSelf) {
       .bindTooltip((isSelf ? "나 (" + name + ")" : name), { permanent: true, direction: "top", offset: [0, -10] })
       .addTo(map);
   }
+}
+
+function focusMember(lat, lng) {
+  if (!map) return;
+  map.flyTo([lat, lng], Math.max(map.getZoom(), 16), { animate: true });
 }
 
 function removeMarker(memberId) {
@@ -233,13 +284,17 @@ function renderMembers(data) {
     }
 
     const isStale = !m.updatedAt || Date.now() - m.updatedAt > STALE_MS;
+    const hasLocation = typeof m.lat === "number" && typeof m.lng === "number";
     const row = document.createElement("div");
     row.className = "member-row";
     row.innerHTML = `
       <span class="member-dot ${isStale ? "member-dot-offline" : "member-dot-online"}"></span>
-      <span class="member-name">${m.name}${isSelf ? " (나)" : ""}</span>
+      <span class="member-name${hasLocation ? " member-name-clickable" : ""}">${m.name}${isSelf ? " (나)" : ""}</span>
       <span class="member-time" data-updated="${m.updatedAt || 0}">${formatRelativeTime(m.updatedAt)}</span>
     `;
+    if (hasLocation) {
+      row.querySelector(".member-name").addEventListener("click", () => focusMember(m.lat, m.lng));
+    }
     listEl.appendChild(row);
   });
 
