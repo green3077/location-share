@@ -93,6 +93,15 @@
     <p class="hint-text">끄면 다른 참여자에게 내 위치가 더 이상 보이지 않습니다.</p>
   </div>
   <div class="card">
+    <div class="panel-title">지도</div>
+    <label class="field-label">지도 종류</label>
+    <select id="mapProviderSelect" class="select-input">
+      <option value="osm">오픈맵 (OpenStreetMap)</option>
+      <option value="kakao">카카오맵</option>
+    </select>
+    <p class="hint-text">변경하면 앱이 새로고침됩니다.</p>
+  </div>
+  <div class="card">
     <div class="panel-title">내 정보</div>
     <label class="field-label">이름</label>
     <input type="text" id="settingsName" maxlength="12">
@@ -114,6 +123,7 @@
 <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-database-compat.js"></script>
 <script src="firebase-config.js"></script>
+<script src="kakao-config.js"></script>
 <script src="ui.js"></script>
 <script src="app.js"></script>
 </body>

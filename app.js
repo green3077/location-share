@@ -16,9 +16,20 @@ const LocalNotifications = IS_NATIVE ? window.Capacitor.registerPlugin("LocalNot
 const NativeProfileBridge = IS_NATIVE ? window.Capacitor.registerPlugin("NativeProfileBridge") : null;
 let bgWatcherId = null;
 
+const MAP_PROVIDER_KEY = "ls_map_provider_v1";
+function getMapProvider() {
+  return localStorage.getItem(MAP_PROVIDER_KEY) || "osm";
+}
+function setMapProvider(p) {
+  localStorage.setItem(MAP_PROVIDER_KEY, p);
+}
+
 let db = null;
-let map = null;
+let map = null; // Leaflet map (오픈맵을 선택했을 때만 사용)
 let markers = {}; // memberId -> L.marker
+let kakaoMap = null; // kakao.maps.Map (카카오맵을 선택했을 때만 사용)
+let kakaoMarkers = {}; // memberId -> { marker, overlay }
+let mapHasFitOnce = false;
 let membersRef = null;
 let shareIntervalId = null;
 let profile = null;
@@ -156,9 +167,21 @@ function bindStaticHandlers() {
     $("#settingsName").value = profile.name;
     $("#settingsGroupCode").value = profile.groupCode;
     $("#sharingToggle").checked = profile.sharingEnabled;
+    $("#mapProviderSelect").value = getMapProvider();
     showScreen("screen-settings");
   });
   $("#btnSettingsBack").addEventListener("click", () => showScreen("screen-main"));
+
+  $("#mapProviderSelect").addEventListener("change", (e) => {
+    if (e.target.value === "kakao" && !KAKAO_APP_KEY) {
+      toast("카카오맵 키가 아직 설정되지 않았습니다.");
+      e.target.value = "osm";
+      return;
+    }
+    setMapProvider(e.target.value);
+    toast("지도를 변경합니다...");
+    setTimeout(() => location.reload(), 500);
+  });
 
   $("#sharingToggle").addEventListener("change", (e) => {
     profile.sharingEnabled = e.target.checked;
@@ -192,6 +215,7 @@ function bindStaticHandlers() {
     saveProfile(profile);
     if (groupChanged) {
       markers = {};
+      kakaoMarkers = {};
       startListening();
     }
     toast("저장되었습니다.");
@@ -206,18 +230,38 @@ function bindStaticHandlers() {
 function startApp() {
   syncNativeProfile(); // 기존 설치본(이 필드가 생기기 전)도 네이티브 저장소에 반영
   $("#groupCodeDisplay").textContent = profile.groupCode;
-  initMap();
-  startListening();
-  if (profile.sharingEnabled) startSharingLoop();
+  initMap(() => {
+    startListening();
+    if (profile.sharingEnabled) startSharingLoop();
+  });
 
   if (listRefreshIntervalId) clearInterval(listRefreshIntervalId);
   listRefreshIntervalId = setInterval(renderMemberListTimesOnly, 30000);
 }
 
-// ---------- 지도 ----------
+// ---------- 지도 (오픈맵/카카오맵 중 설정 화면에서 고른 것을 사용) ----------
 
-function initMap() {
-  if (map) return;
+function initMap(onReady) {
+  if (map || kakaoMap) {
+    onReady && onReady();
+    return;
+  }
+  if (getMapProvider() === "kakao") {
+    if (!KAKAO_APP_KEY) {
+      toast("카카오맵 키가 설정되지 않아 오픈맵으로 표시합니다.");
+      setMapProvider("osm");
+      initLeafletMap();
+      onReady && onReady();
+      return;
+    }
+    initKakaoMap(onReady);
+  } else {
+    initLeafletMap();
+    onReady && onReady();
+  }
+}
+
+function initLeafletMap() {
   map = L.map("map").setView([36.5, 127.8], 7);
   L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
     attribution: "&copy; OpenStreetMap contributors",
@@ -225,7 +269,43 @@ function initMap() {
   }).addTo(map);
 }
 
+// 카카오맵 SDK는 앱키가 URL 쿼리스트링에 들어가야 하므로(kakao-config.js에서 런타임에 읽음)
+// index.html에 정적으로 넣지 못하고, 카카오맵을 실제로 선택했을 때만 동적으로 스크립트를 삽입한다.
+function loadKakaoSdk(callback) {
+  if (window.kakao && window.kakao.maps) {
+    callback();
+    return;
+  }
+  const script = document.createElement("script");
+  script.src = `https://dapi.kakao.com/v2/maps/sdk.js?appkey=${KAKAO_APP_KEY}&autoload=false`;
+  script.onload = () => window.kakao.maps.load(callback);
+  script.onerror = () => {
+    toast("카카오맵을 불러오지 못했습니다. 오픈맵으로 대신 표시합니다.");
+    setMapProvider("osm");
+    initLeafletMap();
+  };
+  document.head.appendChild(script);
+}
+
+function initKakaoMap(onReady) {
+  loadKakaoSdk(() => {
+    kakaoMap = new kakao.maps.Map($("#map"), {
+      center: new kakao.maps.LatLng(36.5, 127.8),
+      level: 13,
+    });
+    onReady && onReady();
+  });
+}
+
 function upsertMarker(memberId, name, lat, lng, isSelf) {
+  if (kakaoMap) {
+    upsertKakaoMarker(memberId, name, lat, lng, isSelf);
+  } else if (map) {
+    upsertLeafletMarker(memberId, name, lat, lng, isSelf);
+  }
+}
+
+function upsertLeafletMarker(memberId, name, lat, lng, isSelf) {
   if (markers[memberId]) {
     markers[memberId].setLatLng([lat, lng]);
   } else {
@@ -241,13 +321,45 @@ function upsertMarker(memberId, name, lat, lng, isSelf) {
   }
 }
 
+function upsertKakaoMarker(memberId, name, lat, lng, isSelf) {
+  const pos = new kakao.maps.LatLng(lat, lng);
+  if (kakaoMarkers[memberId]) {
+    kakaoMarkers[memberId].marker.setPosition(pos);
+    kakaoMarkers[memberId].overlay.setPosition(pos);
+    return;
+  }
+  const marker = new kakao.maps.Marker({ position: pos, map: kakaoMap });
+  const label = document.createElement("div");
+  label.className = "kakao-marker-label" + (isSelf ? " kakao-marker-label-self" : "");
+  label.textContent = isSelf ? "나 (" + name + ")" : name;
+  const overlay = new kakao.maps.CustomOverlay({
+    position: pos,
+    content: label,
+    yAnchor: 2.2,
+  });
+  overlay.setMap(kakaoMap);
+  kakaoMarkers[memberId] = { marker, overlay };
+}
+
 function focusMember(lat, lng) {
+  if (kakaoMap) {
+    kakaoMap.setLevel(Math.min(kakaoMap.getLevel(), 4)); // 카카오맵 level은 낮을수록 확대
+    kakaoMap.panTo(new kakao.maps.LatLng(lat, lng));
+    return;
+  }
   if (!map) return;
   map.flyTo([lat, lng], Math.max(map.getZoom(), 16), { animate: true });
 }
 
 function removeMarker(memberId) {
-  if (markers[memberId]) {
+  if (kakaoMap) {
+    const entry = kakaoMarkers[memberId];
+    if (entry) {
+      entry.marker.setMap(null);
+      entry.overlay.setMap(null);
+      delete kakaoMarkers[memberId];
+    }
+  } else if (markers[memberId]) {
     map.removeLayer(markers[memberId]);
     delete markers[memberId];
   }
@@ -298,13 +410,19 @@ function renderMembers(data) {
     listEl.appendChild(row);
   });
 
-  Object.keys(markers).forEach((id) => {
+  Object.keys(kakaoMap ? kakaoMarkers : markers).forEach((id) => {
     if (!seenIds.has(id)) removeMarker(id);
   });
 
-  if (bounds.length > 0 && !map._hasFitOnce) {
-    map.fitBounds(bounds, { padding: [40, 40], maxZoom: 15 });
-    map._hasFitOnce = true;
+  if (bounds.length > 0 && !mapHasFitOnce) {
+    if (kakaoMap) {
+      const kakaoBounds = new kakao.maps.LatLngBounds();
+      bounds.forEach(([lat, lng]) => kakaoBounds.extend(new kakao.maps.LatLng(lat, lng)));
+      kakaoMap.setBounds(kakaoBounds);
+    } else if (map) {
+      map.fitBounds(bounds, { padding: [40, 40], maxZoom: 15 });
+    }
+    mapHasFitOnce = true;
   }
 }
 
