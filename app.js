@@ -229,6 +229,7 @@ function bindStaticHandlers() {
 
 function startApp() {
   syncNativeProfile(); // 기존 설치본(이 필드가 생기기 전)도 네이티브 저장소에 반영
+  requestNotificationPermission();
   $("#groupCodeDisplay").textContent = profile.groupCode;
   initMap(() => {
     startListening();
@@ -277,7 +278,7 @@ function loadKakaoSdk(callback) {
     return;
   }
   const script = document.createElement("script");
-  script.src = `https://dapi.kakao.com/v2/maps/sdk.js?appkey=${KAKAO_APP_KEY}&autoload=false`;
+  script.src = `https://dapi.kakao.com/v2/maps/sdk.js?appkey=${KAKAO_APP_KEY}&autoload=false&libraries=services`;
   script.onload = () => window.kakao.maps.load(callback);
   script.onerror = () => {
     toast("카카오맵을 불러오지 못했습니다. 오픈맵으로 대신 표시합니다.");
@@ -351,6 +352,41 @@ function focusMember(lat, lng) {
   map.flyTo([lat, lng], Math.max(map.getZoom(), 16), { animate: true });
 }
 
+// 이름 클릭 시 지도 이동과 별개로, 해당 위치의 사람이 읽을 수 있는 주소도 함께 보여준다.
+async function showMemberAddress(name, lat, lng) {
+  const box = $("#selectedAddressBox");
+  $("#selectedAddressTitle").textContent = name + "님 위치";
+  $("#selectedAddressText").textContent = "주소를 불러오는 중...";
+  box.classList.remove("hidden");
+  const address = await reverseGeocode(lat, lng);
+  // 그 사이에 다른 이름을 눌러 제목이 바뀌었다면 늦게 도착한 결과를 덮어쓰지 않는다.
+  if ($("#selectedAddressTitle").textContent !== name + "님 위치") return;
+  $("#selectedAddressText").textContent = address || "주소를 찾을 수 없습니다.";
+}
+
+// 카카오맵을 쓰는 중이면 카카오의 좌표->주소 변환(Geocoder)을, 오픈맵이면 무료 공개 서비스인
+// Nominatim(OpenStreetMap)의 역지오코딩 API를 사용한다 - 둘 다 별도 결제 없이 쓸 수 있다.
+function reverseGeocode(lat, lng) {
+  if (kakaoMap && window.kakao && kakao.maps.services) {
+    return new Promise((resolve) => {
+      const geocoder = new kakao.maps.services.Geocoder();
+      geocoder.coord2Address(lng, lat, (result, status) => {
+        if (status === kakao.maps.services.Status.OK && result[0]) {
+          const road = result[0].road_address;
+          const jibun = result[0].address;
+          resolve((road && road.address_name) || (jibun && jibun.address_name) || null);
+        } else {
+          resolve(null);
+        }
+      });
+    });
+  }
+  return fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&zoom=18&addressdetails=1`)
+    .then((r) => r.json())
+    .then((data) => (data && data.display_name) || null)
+    .catch(() => null);
+}
+
 function removeMarker(memberId) {
   if (kakaoMap) {
     const entry = kakaoMarkers[memberId];
@@ -378,6 +414,7 @@ function stopListening() {
 }
 
 let lastMembersData = {};
+let previousOnlineStatus = {}; // memberId -> 지난 렌더링에서 온라인(회색이 아니었는지) 여부
 
 function renderMembers(data) {
   lastMembersData = data;
@@ -396,6 +433,13 @@ function renderMembers(data) {
     }
 
     const isStale = !m.updatedAt || Date.now() - m.updatedAt > STALE_MS;
+    // 회색(오프라인) -> 초록(온라인)으로 바뀌는 순간에만 알림. 최초 로딩 시(이전 상태를 모를 때)는 울리지 않는다.
+    if (!isSelf) {
+      if (previousOnlineStatus[memberId] === false && !isStale) {
+        notifyMemberBackOnline(m.name);
+      }
+      previousOnlineStatus[memberId] = !isStale;
+    }
     const hasLocation = typeof m.lat === "number" && typeof m.lng === "number";
     const row = document.createElement("div");
     row.className = "member-row";
@@ -405,7 +449,10 @@ function renderMembers(data) {
       <span class="member-time" data-updated="${m.updatedAt || 0}">${formatRelativeTime(m.updatedAt)}</span>
     `;
     if (hasLocation) {
-      row.querySelector(".member-name").addEventListener("click", () => focusMember(m.lat, m.lng));
+      row.querySelector(".member-name").addEventListener("click", () => {
+        focusMember(m.lat, m.lng);
+        showMemberAddress(m.name, m.lat, m.lng);
+      });
     }
     listEl.appendChild(row);
   });
@@ -423,6 +470,44 @@ function renderMembers(data) {
       map.fitBounds(bounds, { padding: [40, 40], maxZoom: 15 });
     }
     mapHasFitOnce = true;
+  }
+}
+
+// 참여자 온라인 복귀 알림을 실제로 띄우려면 미리 권한이 있어야 하므로, 앱 진입(사용자 액션 직후)
+// 시점에 한 번 요청해둔다. 이미 허용/거부된 상태면 브라우저가 다시 묻지 않으므로 매번 호출해도 안전.
+function requestNotificationPermission() {
+  if (IS_NATIVE) {
+    if (LocalNotifications) LocalNotifications.requestPermissions().catch(() => {});
+    return;
+  }
+  if (typeof Notification !== "undefined" && Notification.permission === "default") {
+    Notification.requestPermission().catch(() => {});
+  }
+}
+
+// 다른 참여자가 오프라인(회색)에서 다시 온라인(초록)으로 바뀌면 시스템 알림을 띄운다.
+// 이 알림은 지금 이 기기에서 앱이 실행 중이고(포그라운드 또는 화면이 꺼진 채 백그라운드 서비스가
+// 살아있는 상태) 그룹 데이터를 실시간으로 듣고 있을 때만 울린다 - 서버(Cloud Functions/FCM)를
+// 거치는 진짜 푸시가 아니라서, 아무도 앱을 열어두지 않은 상태라면 아무 기기에도 알림이 가지 않는다.
+async function notifyMemberBackOnline(name) {
+  const title = "위치 공유";
+  const body = `${name}님이 다시 온라인 상태가 되었습니다.`;
+  if (IS_NATIVE && LocalNotifications) {
+    try {
+      await LocalNotifications.schedule({
+        notifications: [{ title, body, id: Date.now() % 2147483647 }],
+      });
+    } catch (e) {
+      console.warn("local notification failed", e);
+    }
+    return;
+  }
+  if (typeof Notification === "undefined") return;
+  if (Notification.permission === "granted") {
+    new Notification(title, { body });
+  } else if (Notification.permission !== "denied") {
+    const permission = await Notification.requestPermission();
+    if (permission === "granted") new Notification(title, { body });
   }
 }
 
