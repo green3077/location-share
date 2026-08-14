@@ -1,3 +1,7 @@
+const APP_VERSION_CODE = 2; // android/app/build.gradle의 versionCode와 항상 같이 올릴 것
+const APP_VERSION_NAME = "1.1";
+const UPDATE_MANIFEST_URL = "https://green3077.github.io/location-share/version.json";
+
 const GATE_KEY = "ls_gate_v1";
 const ACCESS_ID = "6003";
 const ACCESS_PASSWORD = "6003";
@@ -14,6 +18,7 @@ const IS_NATIVE = !!(window.Capacitor && window.Capacitor.isNativePlatform && wi
 const BackgroundGeolocation = IS_NATIVE ? window.Capacitor.registerPlugin("BackgroundGeolocation") : null;
 const LocalNotifications = IS_NATIVE ? window.Capacitor.registerPlugin("LocalNotifications") : null;
 const NativeProfileBridge = IS_NATIVE ? window.Capacitor.registerPlugin("NativeProfileBridge") : null;
+const UpdateBridge = IS_NATIVE ? window.Capacitor.registerPlugin("UpdateBridge") : null;
 let bgWatcherId = null;
 
 const MAP_PROVIDER_KEY = "ls_map_provider_v1";
@@ -168,9 +173,15 @@ function bindStaticHandlers() {
     $("#settingsGroupCode").value = profile.groupCode;
     $("#sharingToggle").checked = profile.sharingEnabled;
     $("#mapProviderSelect").value = getMapProvider();
+    if (IS_NATIVE) {
+      $("#updateCard").classList.remove("hidden");
+      $("#appVersionText").textContent = "현재 버전: " + APP_VERSION_NAME;
+    }
     showScreen("screen-settings");
   });
   $("#btnSettingsBack").addEventListener("click", () => showScreen("screen-main"));
+
+  $("#btnCheckUpdate").addEventListener("click", checkForUpdate);
 
   $("#mapProviderSelect").addEventListener("change", (e) => {
     if (e.target.value === "kakao" && !KAKAO_APP_KEY) {
@@ -508,6 +519,42 @@ async function notifyMemberBackOnline(name) {
   } else if (Notification.permission !== "denied") {
     const permission = await Notification.requestPermission();
     if (permission === "granted") new Notification(title, { body });
+  }
+}
+
+// version.json에 적힌 최신 버전과 지금 설치된 버전(APP_VERSION_CODE)을 비교한다.
+// 안드로이드는 사이드로드 앱을 자기 자신이 조용히 덮어쓸 수 없으므로(설치 자체는 항상
+// 사용자 확인이 필요), 새 APK를 외부 브라우저로 열어 다운로드→설치 흐름을 대신 시작해준다.
+async function checkForUpdate() {
+  toast("업데이트 확인 중...");
+  let info;
+  try {
+    const res = await fetch(UPDATE_MANIFEST_URL + "?t=" + Date.now());
+    info = await res.json();
+  } catch (e) {
+    console.warn("update check failed", e);
+    toast("업데이트 확인에 실패했습니다. 네트워크를 확인해주세요.");
+    return;
+  }
+  if (!info || typeof info.versionCode !== "number") {
+    toast("업데이트 정보를 확인하지 못했습니다.");
+    return;
+  }
+  if (info.versionCode <= APP_VERSION_CODE) {
+    toast("이미 최신 버전입니다.");
+    return;
+  }
+  const ok = await confirmDialog(
+    `새 버전(${info.versionName || info.versionCode})이 있습니다. 지금 다운로드해서 설치할까요?`
+  );
+  if (!ok) return;
+  if (IS_NATIVE && UpdateBridge) {
+    UpdateBridge.openExternal({ url: info.apkUrl }).catch((e) => {
+      console.warn("openExternal failed", e);
+      toast("업데이트 파일을 여는 데 실패했습니다.");
+    });
+  } else {
+    window.open(info.apkUrl, "_blank");
   }
 }
 
