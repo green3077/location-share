@@ -199,6 +199,34 @@ input[type="text"] {
 .member-name-clickable:active { opacity: 0.6; }
 .member-time { color: var(--text-dim); font-size: 13px; }
 
+.log-row {
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+.log-row:last-child { border-bottom: none; }
+.log-row-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.log-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.log-dot-ok { background: var(--online); }
+.log-dot-lost { background: var(--danger); }
+.log-name { font-weight: 600; flex: 1; }
+.log-time { color: var(--text-dim); font-size: 13px; }
+.log-status {
+  margin-top: 4px;
+  margin-left: 18px;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+.log-status-lost { color: var(--danger); font-weight: 600; }
+
 .toggle-row {
   display: flex;
   align-items: center;

@@ -1,6 +1,6 @@
 {
-  "versionCode": 2,
-  "versionName": "1.1",
+  "versionCode": 3,
+  "versionName": "1.2",
   "apkUrl": "https://green3077.github.io/location-share/location-share.apk",
-  "notes": "앱 내 업데이트 확인 기능 추가"
+  "notes": "연결 기록(10분마다 신호 정상/끊김 기록) 추가, 제자리에 있을 때도 신호가 끊긴 것처럼 보이는 문제 개선"
 }

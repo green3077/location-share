@@ -1,5 +1,5 @@
-const APP_VERSION_CODE = 2; // android/app/build.gradle의 versionCode와 항상 같이 올릴 것
-const APP_VERSION_NAME = "1.1";
+const APP_VERSION_CODE = 3; // android/app/build.gradle의 versionCode와 항상 같이 올릴 것
+const APP_VERSION_NAME = "1.2";
 const UPDATE_MANIFEST_URL = "https://green3077.github.io/location-share/version.json";
 
 const GATE_KEY = "ls_gate_v1";
@@ -10,6 +10,11 @@ const PROFILE_KEY = "ls_profile_v1";
 const UPDATE_INTERVAL_MS = 3 * 60 * 1000; // 3분마다 위치 갱신 (웹 브라우저 탭이 열려있을 때만, foreground 전용)
 const STALE_MS = UPDATE_INTERVAL_MS * 3; // 이 시간 이상 갱신 없으면 "오프라인" 표시
 const NATIVE_DISTANCE_FILTER_M = 30; // 네이티브 앱: 이 거리(m) 이상 이동해야 새 위치를 기록 (배터리 절약)
+const NATIVE_WATCHER_RENEW_MS = 10 * 60 * 1000; // 네이티브 워처를 이 간격으로 재시작 (제자리에 있어도 신호 갱신 + GPS가 멈춰버린 경우 복구)
+
+const CONNECTION_LOG_INTERVAL_MS = 10 * 60 * 1000; // 10분마다 친구별 신호 수신 상태 기록
+const CONNECTION_LOG_KEY = "ls_connection_log_v1";
+const CONNECTION_LOG_MAX_ENTRIES = 300; // 기기 저장공간 보호용 상한 (오래된 기록부터 삭제)
 
 // 네이티브 앱(APK)에서는 Capacitor의 백그라운드 위치 플러그인을 통해 화면이 꺼지거나
 // 다른 앱으로 전환해도 계속 위치를 공유한다. 순수 웹(GitHub Pages 등)에서는 이 플러그인이
@@ -20,6 +25,7 @@ const LocalNotifications = IS_NATIVE ? window.Capacitor.registerPlugin("LocalNot
 const NativeProfileBridge = IS_NATIVE ? window.Capacitor.registerPlugin("NativeProfileBridge") : null;
 const UpdateBridge = IS_NATIVE ? window.Capacitor.registerPlugin("UpdateBridge") : null;
 let bgWatcherId = null;
+let nativeRenewIntervalId = null;
 
 const MAP_PROVIDER_KEY = "ls_map_provider_v1";
 function getMapProvider() {
@@ -39,6 +45,7 @@ let membersRef = null;
 let shareIntervalId = null;
 let profile = null;
 let listRefreshIntervalId = null;
+let connectionLogIntervalId = null;
 
 function $(sel) { return document.querySelector(sel); }
 
@@ -236,6 +243,19 @@ function bindStaticHandlers() {
   $("#groupCodeDisplay").addEventListener("click", () => {
     navigator.clipboard.writeText(profile.groupCode).then(() => toast("그룹 코드를 복사했습니다."));
   });
+
+  $("#btnConnectionLog").addEventListener("click", () => {
+    renderConnectionLog();
+    showScreen("screen-connection-log");
+  });
+  $("#btnConnectionLogBack").addEventListener("click", () => showScreen("screen-settings"));
+  $("#btnConnectionLogClear").addEventListener("click", async () => {
+    const ok = await confirmDialog("연결 기록을 모두 삭제할까요?");
+    if (!ok) return;
+    localStorage.removeItem(CONNECTION_LOG_KEY);
+    renderConnectionLog();
+    toast("연결 기록을 삭제했습니다.");
+  });
 }
 
 function startApp() {
@@ -249,6 +269,8 @@ function startApp() {
 
   if (listRefreshIntervalId) clearInterval(listRefreshIntervalId);
   listRefreshIntervalId = setInterval(renderMemberListTimesOnly, 30000);
+
+  startConnectionLogging();
 }
 
 // ---------- 지도 (오픈맵/카카오맵 중 설정 화면에서 고른 것을 사용) ----------
@@ -565,6 +587,81 @@ function renderMemberListTimesOnly() {
   });
 }
 
+// ---------- 연결 기록 (친구들이 지도에 회색으로 겹쳐 보이는 것과 무관하게, 실제로 신호를
+// 계속 받고 있는지를 10분마다 기록해서 나중에 확인할 수 있게 함) ----------
+
+function getConnectionLog() {
+  try {
+    const raw = localStorage.getItem(CONNECTION_LOG_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+function appendConnectionLog(entries) {
+  if (!entries.length) return;
+  const log = getConnectionLog().concat(entries);
+  const trimmed = log.length > CONNECTION_LOG_MAX_ENTRIES ? log.slice(log.length - CONNECTION_LOG_MAX_ENTRIES) : log;
+  localStorage.setItem(CONNECTION_LOG_KEY, JSON.stringify(trimmed));
+}
+
+function logConnectionStatuses() {
+  const now = Date.now();
+  const entries = [];
+  Object.entries(lastMembersData).forEach(([memberId, m]) => {
+    if (memberId === profile.memberId) return;
+    const minutesSince = m.updatedAt ? Math.floor((now - m.updatedAt) / 60000) : null;
+    const isStale = !m.updatedAt || now - m.updatedAt > STALE_MS;
+    entries.push({ ts: now, name: m.name, status: isStale ? "lost" : "ok", minutesSince });
+  });
+  appendConnectionLog(entries);
+  if (!$("#screen-connection-log").classList.contains("hidden")) renderConnectionLog();
+}
+
+function startConnectionLogging() {
+  if (connectionLogIntervalId) clearInterval(connectionLogIntervalId);
+  logConnectionStatuses();
+  connectionLogIntervalId = setInterval(logConnectionStatuses, CONNECTION_LOG_INTERVAL_MS);
+}
+
+function formatLogTime(ts) {
+  const d = new Date(ts);
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${pad(d.getMonth() + 1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function renderConnectionLog() {
+  const listEl = $("#connectionLogList");
+  const log = getConnectionLog();
+  if (!log.length) {
+    listEl.innerHTML = `<p class="hint-text">아직 기록이 없습니다. 10분마다 자동으로 기록됩니다.</p>`;
+    return;
+  }
+  listEl.innerHTML = log
+    .slice()
+    .reverse()
+    .map((entry) => {
+      const statusText =
+        entry.status === "ok"
+          ? "정상 수신"
+          : "신호 끊김" + (entry.minutesSince != null ? ` (${entry.minutesSince}분간 갱신 없음)` : "");
+      const dotClass = entry.status === "ok" ? "log-dot-ok" : "log-dot-lost";
+      const statusClass = entry.status === "ok" ? "" : " log-status-lost";
+      return `
+        <div class="log-row">
+          <div class="log-row-top">
+            <span class="log-dot ${dotClass}"></span>
+            <span class="log-name">${entry.name}</span>
+            <span class="log-time">${formatLogTime(entry.ts)}</span>
+          </div>
+          <div class="log-status${statusClass}">${statusText}</div>
+        </div>
+      `;
+    })
+    .join("");
+}
+
 // Realtime Database REST API로 직접 PUT한다 (Firebase JS SDK의 웹소켓 대신).
 // 안드로이드 WebView는 화면이 꺼지거나 앱이 백그라운드로 간 지 몇 분이 지나면
 // 자체적으로 네트워크 요청을 지연시키는데, capacitor.config.json에서 켠
@@ -635,6 +732,14 @@ function stopSharingLoop() {
 // 지속 알림을 통해 화면이 꺼지거나 다른 앱으로 전환해도 위치 갱신을 계속 받을 수 있게 해준다.
 // 알림 표시 권한(POST_NOTIFICATIONS, 안드로이드 13+)은 이 플러그인이 직접 요청하지 않으므로
 // LocalNotifications로 먼저 요청한다 (플러그인 공식 문서 권장 방식).
+//
+// distanceFilter(30m)는 "그만큼 움직여야 새 위치를 보고한다"는 필터라서, 제자리에 계속
+// 머물러 있으면 안드로이드가 새 위치를 아예 전달하지 않고, updatedAt도 갱신되지 않아
+// 일정 시간 후 "신호 끊김(회색)"으로 보인다. 게다가 기기/제조사의 배터리 최적화가
+// GPS 워처 자체를 조용히 멈춰버리면, 그 이후 실제로 움직여도 새 위치가 잡히지 않는
+// 문제가 생길 수 있다. 이를 보완하기 위해 워처를 주기적으로 완전히 재시작한다:
+// 재시작 시점에는 distanceFilter 기준(직전 위치)이 초기화되므로 제자리에 있어도 위치가
+// 한 번 다시 보고되고(신호 살아있음 확인), 혹시 멈춰있던 GPS 워처도 다시 살아난다.
 async function startNativeBackgroundSharing() {
   if (bgWatcherId) return;
   try {
@@ -648,7 +753,7 @@ async function startNativeBackgroundSharing() {
         backgroundMessage: "가족/지인에게 내 위치를 공유하고 있습니다. 취소하면 배터리 소모를 줄일 수 있습니다.",
         backgroundTitle: "위치 공유 중",
         requestPermissions: true,
-        stale: false,
+        stale: true, // 워처 시작/재시작 직후 캐시된 마지막 위치를 즉시 한 번 보고 (제자리라도 신호 갱신)
         distanceFilter: NATIVE_DISTANCE_FILTER_M,
       },
       (location, error) => {
@@ -667,10 +772,32 @@ async function startNativeBackgroundSharing() {
   } catch (e) {
     console.error("failed to start background watcher", e);
     toast("백그라운드 위치 공유를 시작하지 못했습니다.");
+    return;
+  }
+  if (!nativeRenewIntervalId) {
+    nativeRenewIntervalId = setInterval(renewNativeWatcher, NATIVE_WATCHER_RENEW_MS);
   }
 }
 
+// 워처를 완전히 내렸다가 새로 등록한다. removeWatcher/addWatcher 둘 다 실패해도 무시하고
+// 계속 진행 - 다음 갱신 주기에 다시 시도되므로 여기서 막히면 오히려 공유가 영영 멈춘다.
+async function renewNativeWatcher() {
+  if (!bgWatcherId) return; // 공유가 꺼져 있으면 아무것도 하지 않음
+  const oldId = bgWatcherId;
+  bgWatcherId = null;
+  try {
+    await BackgroundGeolocation.removeWatcher({ id: oldId });
+  } catch (e) {
+    console.warn("renewNativeWatcher: removeWatcher failed", e);
+  }
+  await startNativeBackgroundSharing();
+}
+
 function stopNativeBackgroundSharing() {
+  if (nativeRenewIntervalId) {
+    clearInterval(nativeRenewIntervalId);
+    nativeRenewIntervalId = null;
+  }
   if (!bgWatcherId) return;
   BackgroundGeolocation.removeWatcher({ id: bgWatcherId });
   bgWatcherId = null;
