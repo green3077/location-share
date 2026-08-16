@@ -1,5 +1,5 @@
-const APP_VERSION_CODE = 11; // android/app/build.gradle의 versionCode와 항상 같이 올릴 것
-const APP_VERSION_NAME = "1.10";
+const APP_VERSION_CODE = 12; // android/app/build.gradle의 versionCode와 항상 같이 올릴 것
+const APP_VERSION_NAME = "1.11";
 const UPDATE_MANIFEST_URL = "https://green3077.github.io/location-share/version.json";
 
 const GATE_KEY = "ls_gate_v1";
@@ -66,6 +66,16 @@ function $(sel) { return document.querySelector(sel); }
 function showScreen(id) {
   document.querySelectorAll(".screen").forEach((el) => el.classList.add("hidden"));
   $("#" + id).classList.remove("hidden");
+  // #map은 다른 화면(설정 등)이 떠 있는 동안 display:none으로 숨겨지는데, 그 사이
+  // Leaflet/카카오맵이 컨테이너 크기 변화를 못 감지해서 다시 보일 때 지도가 잘려 보이는
+  // 문제가 있다. display:none이 풀려 실제 레이아웃이 잡힌 다음 프레임에 크기를 다시
+  // 계산시켜준다.
+  if (id === "screen-main") {
+    requestAnimationFrame(() => {
+      if (map) map.invalidateSize();
+      if (kakaoMap) kakaoMap.relayout();
+    });
+  }
 }
 
 // ---------- 화면 이동 기록 (안드로이드 하드웨어 뒤로가기 버튼용) ----------
@@ -287,9 +297,11 @@ function bindStaticHandlers() {
     profile.name = name;
     profile.groupCode = groupCode;
     saveProfile(profile);
+    $("#groupCodeDisplay").textContent = profile.groupCode;
     if (groupChanged) {
       markers = {};
       kakaoMarkers = {};
+      mapHasFitOnce = false; // 새 그룹 멤버들의 위치에 맞춰 지도가 다시 자동으로 맞춰지도록
       startListening();
     }
     toast("저장되었습니다.");

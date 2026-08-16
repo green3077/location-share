@@ -1,6 +1,6 @@
 {
-  "versionCode": 11,
-  "versionName": "1.10",
+  "versionCode": 12,
+  "versionName": "1.11",
   "apkUrl": "https://green3077.github.io/location-share/location-share.apk",
-  "notes": "친구 이름을 누르면 그 친구가 지금 어떤 앱 버전을 쓰고 있는지 위치 상세 패널에 표시"
+  "notes": "설정에서 그룹 코드를 바꾼 뒤 지도가 잘려 보이던 문제 수정, 그룹 변경 시 상단 그룹 표시가 즉시 갱신되도록 수정"
 }
