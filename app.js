@@ -1,5 +1,5 @@
-const APP_VERSION_CODE = 5; // android/app/build.gradle의 versionCode와 항상 같이 올릴 것
-const APP_VERSION_NAME = "1.4";
+const APP_VERSION_CODE = 6; // android/app/build.gradle의 versionCode와 항상 같이 올릴 것
+const APP_VERSION_NAME = "1.5";
 const UPDATE_MANIFEST_URL = "https://green3077.github.io/location-share/version.json";
 
 const GATE_KEY = "ls_gate_v1";
@@ -28,6 +28,8 @@ const BackgroundGeolocation = IS_NATIVE ? window.Capacitor.registerPlugin("Backg
 const LocalNotifications = IS_NATIVE ? window.Capacitor.registerPlugin("LocalNotifications") : null;
 const NativeProfileBridge = IS_NATIVE ? window.Capacitor.registerPlugin("NativeProfileBridge") : null;
 const UpdateBridge = IS_NATIVE ? window.Capacitor.registerPlugin("UpdateBridge") : null;
+const BatteryOptimizationBridge = IS_NATIVE ? window.Capacitor.registerPlugin("BatteryOptimizationBridge") : null;
+const BATTERY_OPT_ASKED_KEY = "ls_battery_opt_asked_v1";
 let bgWatcherId = null;
 let nativeRenewIntervalId = null;
 
@@ -224,12 +226,20 @@ function bindStaticHandlers() {
     if (IS_NATIVE) {
       $("#updateCard").classList.remove("hidden");
       $("#appVersionText").textContent = "현재 버전: " + APP_VERSION_NAME;
+      refreshBatteryCard();
     }
     pushScreen("screen-settings");
   });
   $("#btnSettingsBack").addEventListener("click", goBackScreen);
 
   $("#btnCheckUpdate").addEventListener("click", checkForUpdate);
+  $("#btnBatteryOptExempt").addEventListener("click", async () => {
+    try {
+      await BatteryOptimizationBridge.requestExemption();
+    } catch (e) {
+      console.warn("requestExemption failed", e);
+    }
+  });
 
   $("#mapProviderSelect").addEventListener("change", (e) => {
     if (e.target.value === "kakao" && !KAKAO_APP_KEY) {
@@ -315,6 +325,7 @@ function bindStaticHandlers() {
 function startApp() {
   syncNativeProfile(); // 기존 설치본(이 필드가 생기기 전)도 네이티브 저장소에 반영
   requestNotificationPermission();
+  maybeRequestBatteryOptimizationExemption();
   $("#groupCodeDisplay").textContent = profile.groupCode;
   initMap(() => {
     startListening();
@@ -649,6 +660,50 @@ function requestNotificationPermission() {
   }
   if (typeof Notification !== "undefined" && Notification.permission === "default") {
     Notification.requestPermission().catch(() => {});
+  }
+}
+
+// 삼성 등 일부 제조사의 배터리 최적화는 위치 공유용 포그라운드 서비스를 조용히 죽여버릴 수
+// 있다. 앱 시작마다(설치 이후 딱 한 번만 사용자에게 물어봄 - BATTERY_OPT_ASKED_KEY) 이미
+// 제외돼있는지 확인하고, 아니라면 이유를 설명하는 확인창을 띄운 뒤 시스템 설정 화면으로
+// 안내한다. 설정 화면에도 언제든 다시 열 수 있는 버튼을 별도로 둔다(아래 refreshBatteryCard).
+async function maybeRequestBatteryOptimizationExemption() {
+  if (!IS_NATIVE || !BatteryOptimizationBridge) return;
+  if (localStorage.getItem(BATTERY_OPT_ASKED_KEY) === "1") return;
+  let ignoring = true;
+  try {
+    ({ ignoring } = await BatteryOptimizationBridge.isIgnoringBatteryOptimizations());
+  } catch (e) {
+    console.warn("isIgnoringBatteryOptimizations failed", e);
+    return;
+  }
+  localStorage.setItem(BATTERY_OPT_ASKED_KEY, "1");
+  if (ignoring) return;
+  const ok = await confirmDialog(
+    "위치 공유가 중간에 끊기지 않도록, 이 앱을 배터리 최적화 대상에서 제외해주세요. 다음 화면에서 '허용'을 눌러주세요."
+  );
+  if (!ok) return;
+  try {
+    await BatteryOptimizationBridge.requestExemption();
+  } catch (e) {
+    console.warn("requestExemption failed", e);
+  }
+}
+
+// 설정 화면을 열 때마다 현재 배터리 최적화 제외 상태를 다시 확인해서 카드 문구를 갱신한다
+// (사용자가 시스템 설정에서 직접 바꿨을 수도 있으므로 캐시하지 않고 매번 새로 확인).
+async function refreshBatteryCard() {
+  if (!IS_NATIVE || !BatteryOptimizationBridge) return;
+  $("#batteryCard").classList.remove("hidden");
+  $("#batteryOptStatusText").textContent = "확인 중...";
+  try {
+    const { ignoring } = await BatteryOptimizationBridge.isIgnoringBatteryOptimizations();
+    $("#batteryOptStatusText").textContent = ignoring
+      ? "✅ 이미 배터리 최적화 대상에서 제외되어 있습니다."
+      : "⚠️ 아직 배터리 최적화 대상입니다. 절전 기능이 백그라운드 위치 공유를 중간에 끊을 수 있어요.";
+  } catch (e) {
+    console.warn("refreshBatteryCard failed", e);
+    $("#batteryOptStatusText").textContent = "상태를 확인하지 못했습니다.";
   }
 }
 
