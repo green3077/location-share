@@ -1,5 +1,5 @@
-const APP_VERSION_CODE = 7; // android/app/build.gradle의 versionCode와 항상 같이 올릴 것
-const APP_VERSION_NAME = "1.6";
+const APP_VERSION_CODE = 8; // android/app/build.gradle의 versionCode와 항상 같이 올릴 것
+const APP_VERSION_NAME = "1.7";
 const UPDATE_MANIFEST_URL = "https://green3077.github.io/location-share/version.json";
 
 const GATE_KEY = "ls_gate_v1";
@@ -49,7 +49,8 @@ let kakaoMarkers = {}; // memberId -> { marker, overlay }
 let mapHasFitOnce = false;
 let membersRef = null;
 let myRequestRef = null;
-let myRequestListenerReady = false;
+let lastHandledLocationRequestAt = "__unset__";
+let locationRequestPollIntervalId = null;
 let shareIntervalId = null;
 let profile = null;
 let listRefreshIntervalId = null;
@@ -600,9 +601,17 @@ function startListening() {
   membersRef = db.ref(`groups/${profile.groupCode}/members`);
   membersRef.on("value", (snapshot) => renderMembers(snapshot.val() || {}));
 
-  myRequestListenerReady = false;
+  // 위치 요청 감지는 두 경로를 함께 쓴다: (1) 실시간 리스너(포그라운드에서는 거의 즉시 반응)와
+  // (2) 1분마다 REST로 직접 확인하는 폴링. 실시간 리스너(SDK 웹소켓)만 쓰면 화면이 꺼진 채
+  // 오래 백그라운드에 있을 때 조용히 끊겨서 요청을 영영 못 받는 경우가 있었다 - writeLocation을
+  // REST로 바꾼 것과 같은 이유. 두 경로가 같은 요청에 동시에 반응하지 않도록
+  // lastHandledLocationRequestAt으로 중복을 막는다.
+  lastHandledLocationRequestAt = "__unset__";
   myRequestRef = db.ref(`groups/${profile.groupCode}/members/${profile.memberId}/locationRequestedAt`);
-  myRequestRef.on("value", handleIncomingLocationRequest);
+  myRequestRef.on("value", (snapshot) => handleLocationRequestValue(snapshot.val()));
+
+  if (locationRequestPollIntervalId) clearInterval(locationRequestPollIntervalId);
+  locationRequestPollIntervalId = setInterval(pollForLocationRequest, 60 * 1000);
 }
 
 function stopListening() {
@@ -610,19 +619,40 @@ function stopListening() {
   membersRef = null;
   if (myRequestRef) myRequestRef.off();
   myRequestRef = null;
+  if (locationRequestPollIntervalId) {
+    clearInterval(locationRequestPollIntervalId);
+    locationRequestPollIntervalId = null;
+  }
+}
+
+// 실시간 리스너가 백그라운드 중 끊겨있을 수 있으므로, REST로도 1분마다 직접 확인한다
+// (writeLocation과 같은 이유로 fetch는 CapacitorHttp의 네이티브 네트워킹 우회 혜택을 받아
+// 백그라운드에서도 안정적으로 동작한다).
+async function pollForLocationRequest() {
+  if (!profile || !firebaseConfig.databaseURL) return;
+  try {
+    const url = `${firebaseConfig.databaseURL}/groups/${encodeURIComponent(profile.groupCode)}/members/${encodeURIComponent(profile.memberId)}/locationRequestedAt.json?t=${Date.now()}`;
+    const res = await fetch(url);
+    const requestedAt = await res.json();
+    handleLocationRequestValue(requestedAt);
+  } catch (e) {
+    console.warn("pollForLocationRequest failed", e);
+  }
 }
 
 // 다른 참여자가 회색(오프라인)인 내 이름을 눌러 위치를 요청하면(requestFreshLocationFrom),
-// 이 리스너가 그걸 감지해서 지금 위치를 곧바로 한 번 더 보낸다. 리스너를 새로 구독할 때 오는
-// 첫 스냅샷은 예전 세션에 남아있던 오래된 요청일 수 있으므로 반응하지 않고 건너뛴다 - 그렇지
-// 않으면 앱을 열 때마다 과거 요청에 계속 재반응하게 된다.
-function handleIncomingLocationRequest(snapshot) {
-  if (!myRequestListenerReady) {
-    myRequestListenerReady = true;
+// 실시간 리스너 또는 폴링 중 먼저 감지한 쪽이 이 함수를 불러 지금 위치를 곧바로 다시 보낸다.
+// 리스너/폴링을 새로 시작할 때 오는 첫 값은 예전 세션에 남아있던 오래된 요청일 수 있으므로
+// 반응하지 않고 기준선으로만 저장한다 - 그렇지 않으면 앱을 열 때마다 과거 요청에 계속
+// 재반응하게 된다. 그 이후로는 값이 실제로 바뀔 때만(=새 요청) 반응한다.
+function handleLocationRequestValue(requestedAt) {
+  if (lastHandledLocationRequestAt === "__unset__") {
+    lastHandledLocationRequestAt = requestedAt || null;
     return;
   }
-  const requestedAt = snapshot.val();
-  if (!requestedAt || !profile || !profile.sharingEnabled) return;
+  if (!requestedAt || requestedAt === lastHandledLocationRequestAt) return;
+  lastHandledLocationRequestAt = requestedAt;
+  if (!profile || !profile.sharingEnabled) return;
   toast("친구가 내 위치를 요청해서 다시 보냅니다.");
   if (IS_NATIVE) {
     renewNativeWatcher(); // 워처를 재시작(stale:true)하면 제자리에 있어도 즉시 한 번 더 보고된다.
@@ -854,15 +884,39 @@ function appendConnectionLog(entries) {
   localStorage.setItem(CONNECTION_LOG_KEY, JSON.stringify(trimmed));
 }
 
-function logConnectionStatuses() {
+// 같은(또는 거의 같은) 위치를 반복해서 역지오코딩하지 않도록 좌표를 약 100m 단위로 뭉쳐서
+// 캐싱한다 - 기록은 10분마다 남는데, 제자리에 머무는 친구라면 그때마다 같은 주소를 다시
+// API에 물어볼 필요가 없다(Nominatim 등 무료 역지오코딩 서비스의 과도한 반복 호출을 피함).
+const geocodeCache = new Map();
+function geocodeCacheKey(lat, lng) {
+  return `${lat.toFixed(3)},${lng.toFixed(3)}`;
+}
+async function reverseGeocodeCached(lat, lng) {
+  const key = geocodeCacheKey(lat, lng);
+  if (geocodeCache.has(key)) return geocodeCache.get(key);
+  const address = await reverseGeocode(lat, lng);
+  geocodeCache.set(key, address);
+  return address;
+}
+
+async function logConnectionStatuses() {
   const now = Date.now();
   const entries = [];
-  Object.entries(lastMembersData).forEach(([memberId, m]) => {
-    if (memberId === profile.memberId) return;
+  const targets = Object.entries(lastMembersData).filter(([memberId]) => memberId !== profile.memberId);
+  // 여러 명을 한꺼번에 병렬로 지오코딩하면 짧은 시간에 요청이 몰릴 수 있어 순차로 처리한다.
+  for (const [, m] of targets) {
     const minutesSince = m.updatedAt ? Math.floor((now - m.updatedAt) / 60000) : null;
     const isStale = !m.updatedAt || now - m.updatedAt > STALE_MS;
-    entries.push({ ts: now, name: m.name, status: isStale ? "lost" : "ok", minutesSince });
-  });
+    let address = null;
+    if (typeof m.lat === "number" && typeof m.lng === "number") {
+      try {
+        address = await reverseGeocodeCached(m.lat, m.lng);
+      } catch (e) {
+        address = null;
+      }
+    }
+    entries.push({ ts: now, name: m.name, status: isStale ? "lost" : "ok", minutesSince, address });
+  }
   appendConnectionLog(entries);
   lastConnectionLogAt = now;
   if (!$("#screen-connection-log").classList.contains("hidden")) renderConnectionLog();
@@ -914,6 +968,7 @@ function renderConnectionLog() {
           : "신호 끊김" + (entry.minutesSince != null ? ` (${entry.minutesSince}분간 갱신 없음)` : "");
       const dotClass = entry.status === "ok" ? "log-dot-ok" : "log-dot-lost";
       const statusClass = entry.status === "ok" ? "" : " log-status-lost";
+      const addressHtml = entry.address ? `<div class="log-address">📍 ${entry.address}</div>` : "";
       return `
         <div class="log-row">
           <div class="log-row-top">
@@ -922,6 +977,7 @@ function renderConnectionLog() {
             <span class="log-time">${formatLogTime(entry.ts)}</span>
           </div>
           <div class="log-status${statusClass}">${statusText}</div>
+          ${addressHtml}
         </div>
       `;
     })
