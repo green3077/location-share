@@ -1,5 +1,5 @@
-const APP_VERSION_CODE = 9; // android/app/build.gradle의 versionCode와 항상 같이 올릴 것
-const APP_VERSION_NAME = "1.8";
+const APP_VERSION_CODE = 10; // android/app/build.gradle의 versionCode와 항상 같이 올릴 것
+const APP_VERSION_NAME = "1.9";
 const UPDATE_MANIFEST_URL = "https://green3077.github.io/location-share/version.json";
 
 const GATE_KEY = "ls_gate_v1";
@@ -58,6 +58,8 @@ let connectionLogIntervalId = null;
 let selectedMemberId = null;
 let selectedMemberCheckStartUpdatedAt = null;
 let lastConnectionLogAt = 0;
+let awaitingLocationResponseFor = null;
+let activeRequestPollTimer = null;
 
 function $(sel) { return document.querySelector(sel); }
 
@@ -469,43 +471,89 @@ function selectMember(memberId, m) {
     $("#selectedAddressTitle").textContent = m.name + "님 위치";
     $("#selectedAddressText").textContent = "아직 수신된 위치가 없습니다.";
   }
-  renderConnectionCheck(m);
-  // 실시간 리스너(웹소켓)가 백그라운드 중 조용히 끊긴 채로 있으면 화면에는 회색으로만
-  // 보일 뿐 자동으로는 복구되지 않을 수 있다. 이름을 누른 시점에 REST로 그 친구의
-  // 최신 상태를 직접 한 번 더 확인해서, 실제로는 신호가 살아있다면 곧바로 초록색으로 갱신한다.
-  forceRefreshMember(memberId);
-
-  // 위 REST 재확인은 "이미 보낸 신호를 놓쳤을 수도 있는" 경우를 잡아줄 뿐, 친구 쪽이 실제로
-  // 오래 전에 멈춘 상태라면 아무 소용이 없다. 그런 경우를 위해, 회색(오프라인)인 친구에게는
-  // "지금 위치를 다시 보내달라"는 요청도 함께 남긴다 - 친구 앱이 아직 실행 중(포그라운드 또는
-  // 백그라운드 서비스)이면 이 요청을 감지해서 곧바로 위치를 다시 보내고, 그러면 이 화면은
-  // 평소처럼 실시간 리스너로 자동 초록색이 된다.
   const isStale = !m.updatedAt || Date.now() - m.updatedAt > STALE_MS;
   if (memberId !== profile.memberId && isStale) {
-    requestFreshLocationFrom(memberId, m.name);
+    // 회색(오프라인)인 친구는 "요청을 보내고 기다리는" 느낌 대신, 누르는 즉시 위치를 받아오는
+    // 중이라는 걸 보여주고 응답이 오면 곧바로 초록색으로 바뀌도록 능동적으로 짧은 간격으로
+    // 다시 확인한다(startAwaitingFreshLocation).
+    startAwaitingFreshLocation(memberId, m.name, m.updatedAt || 0);
+  } else {
+    renderConnectionCheck(m);
+    // 실시간 리스너(웹소켓)가 백그라운드 중 조용히 끊긴 채로 있으면 화면에는 회색으로만
+    // 보일 뿐 자동으로는 복구되지 않을 수 있다. 이름을 누른 시점에 REST로 한 번 더 확인해서,
+    // 실제로는 신호가 살아있다면 곧바로 초록색으로 갱신한다.
+    forceRefreshMember(memberId);
   }
 }
 
-// 회색(오프라인)인 친구의 Firebase 항목에 "지금 위치를 다시 보내달라"는 요청 플래그를 남긴다.
-// 전체 위치 데이터를 덮어쓰지 않도록 PATCH를 쓴다 - 친구가 다음번에 위치를 쓸 때(PUT)는
-// 노드 전체가 새 값으로 교체되므로, 이 요청 플래그는 응답이 오면 자연스럽게 사라진다
-// (따로 지워줄 필요 없음).
-async function requestFreshLocationFrom(memberId, name) {
-  if (!profile || !firebaseConfig.databaseURL) return;
-  try {
+const LOCATION_REQUEST_POLL_MS = 3000; // 요청을 보낸 뒤 이 간격으로 응답이 왔는지 확인
+const LOCATION_REQUEST_TIMEOUT_MS = 30000; // 이 시간 안에 응답이 없으면 포기하고 평소 상태 표시로 되돌아감
+
+function stopAwaitingFreshLocation() {
+  if (activeRequestPollTimer) {
+    clearTimeout(activeRequestPollTimer);
+    activeRequestPollTimer = null;
+  }
+  awaitingLocationResponseFor = null;
+}
+
+// 회색(오프라인)인 친구 이름을 누르면 "요청을 보냈다"는 안내로 끝내지 않고, 응답이 올 때까지
+// 능동적으로 짧은 간격(3초)으로 다시 확인해서 받아오는 즉시 초록색으로 바꿔준다. 친구의
+// Firebase 항목에 위치 요청 플래그를 남기는 것 자체는 그대로 필요하다(친구 기기가 실제로
+// 새 위치를 보고하게 만드는 유일한 통로) - 이 함수는 그 응답을 최대한 빨리 붙잡아오는 역할.
+function startAwaitingFreshLocation(memberId, name, baselineUpdatedAt) {
+  stopAwaitingFreshLocation();
+  awaitingLocationResponseFor = memberId;
+  const box = $("#connectionCheckStatus");
+  box.classList.remove("hidden", "connection-ok", "connection-lost");
+  box.classList.add("connection-pending");
+  box.textContent = `🔄 ${name}님 위치를 받아오는 중...`;
+
+  if (profile && firebaseConfig.databaseURL) {
     const url = `${firebaseConfig.databaseURL}/groups/${encodeURIComponent(profile.groupCode)}/members/${encodeURIComponent(memberId)}.json`;
-    await fetch(url, {
+    fetch(url, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         locationRequestedAt: { ".sv": "timestamp" },
         locationRequestedByName: profile.name,
       }),
-    });
-    toast(`${name}님에게 위치 요청을 보냈습니다.`);
-  } catch (e) {
-    console.warn("requestFreshLocationFrom failed", e);
+    }).catch((e) => console.warn("location request flag failed", e));
   }
+
+  pollAwaitingFreshLocation(memberId, baselineUpdatedAt, Date.now() + LOCATION_REQUEST_TIMEOUT_MS);
+}
+
+async function pollAwaitingFreshLocation(memberId, baselineUpdatedAt, deadline) {
+  if (selectedMemberId !== memberId || awaitingLocationResponseFor !== memberId) return; // 그 사이 다른 화면/멤버로 이동함
+  try {
+    const url = `${firebaseConfig.databaseURL}/groups/${encodeURIComponent(profile.groupCode)}/members/${encodeURIComponent(memberId)}.json?t=${Date.now()}`;
+    const res = await fetch(url);
+    const data = await res.json();
+    if (data) {
+      lastMembersData = { ...lastMembersData, [memberId]: data };
+      if (data.updatedAt && data.updatedAt > baselineUpdatedAt) {
+        // 응답 도착 - 대기 상태를 풀어주면 renderMembers가 평소대로 초록색 + 연결 확인 문구를 그려준다.
+        awaitingLocationResponseFor = null;
+        renderMembers(lastMembersData);
+        return;
+      }
+    }
+  } catch (e) {
+    console.warn("pollAwaitingFreshLocation failed", e);
+  }
+
+  if (selectedMemberId !== memberId || awaitingLocationResponseFor !== memberId) return;
+  if (Date.now() >= deadline) {
+    awaitingLocationResponseFor = null;
+    renderMembers(lastMembersData); // 평소의 회색/빨강 상태 문구로 되돌아감
+    toast(`${lastMembersData[memberId]?.name || "친구"}님이 응답하지 않았습니다. 친구가 앱을 열면 자동으로 갱신됩니다.`);
+    return;
+  }
+  activeRequestPollTimer = setTimeout(
+    () => pollAwaitingFreshLocation(memberId, baselineUpdatedAt, deadline),
+    LOCATION_REQUEST_POLL_MS
+  );
 }
 
 // 특정 멤버 한 명의 최신 상태만 Realtime Database REST API로 즉시 조회해서 반영한다.
@@ -718,7 +766,7 @@ function renderMembers(data) {
     // 회색(오프라인)으로 보이는 친구를 눌러도 곧바로 실시간 연결 확인 패널이 뜨도록,
     // 위치 유무와 무관하게 항상 클릭 가능하게 한다 (위치가 있으면 지도 이동도 함께).
     row.querySelector(".member-name").addEventListener("click", () => selectMember(memberId, m));
-    if (memberId === selectedMemberId) {
+    if (memberId === selectedMemberId && awaitingLocationResponseFor !== memberId) {
       renderConnectionCheck(m);
     }
     listEl.appendChild(row);
