@@ -1,5 +1,5 @@
-const APP_VERSION_CODE = 8; // android/app/build.gradle의 versionCode와 항상 같이 올릴 것
-const APP_VERSION_NAME = "1.7";
+const APP_VERSION_CODE = 9; // android/app/build.gradle의 versionCode와 항상 같이 올릴 것
+const APP_VERSION_NAME = "1.8";
 const UPDATE_MANIFEST_URL = "https://green3077.github.io/location-share/version.json";
 
 const GATE_KEY = "ls_gate_v1";
