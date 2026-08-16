@@ -72,7 +72,11 @@
   <div id="map"></div>
 
   <div id="selectedAddressBox" class="card hidden">
-    <div class="panel-title" id="selectedAddressTitle"></div>
+    <div class="address-box-header">
+      <div class="panel-title" id="selectedAddressTitle"></div>
+      <button id="btnCloseAddressBox" class="icon-btn-close" aria-label="닫기">✕</button>
+    </div>
+    <div id="connectionCheckStatus" class="connection-check hidden"></div>
     <div id="selectedAddressText" class="hint-text"></div>
   </div>
 

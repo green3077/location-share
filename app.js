@@ -1,5 +1,5 @@
-const APP_VERSION_CODE = 3; // android/app/build.gradle의 versionCode와 항상 같이 올릴 것
-const APP_VERSION_NAME = "1.2";
+const APP_VERSION_CODE = 4; // android/app/build.gradle의 versionCode와 항상 같이 올릴 것
+const APP_VERSION_NAME = "1.3";
 const UPDATE_MANIFEST_URL = "https://green3077.github.io/location-share/version.json";
 
 const GATE_KEY = "ls_gate_v1";
@@ -46,6 +46,9 @@ let shareIntervalId = null;
 let profile = null;
 let listRefreshIntervalId = null;
 let connectionLogIntervalId = null;
+let selectedMemberId = null;
+let selectedMemberCheckStartUpdatedAt = null;
+let lastConnectionLogAt = 0;
 
 function $(sel) { return document.querySelector(sel); }
 
@@ -53,6 +56,31 @@ function showScreen(id) {
   document.querySelectorAll(".screen").forEach((el) => el.classList.add("hidden"));
   $("#" + id).classList.remove("hidden");
 }
+
+// ---------- 화면 이동 기록 (안드로이드 하드웨어 뒤로가기 버튼용) ----------
+// 이 앱은 SPA(단일 페이지)라서 브라우저/웹뷰 히스토리가 원래 비어있고,
+// 그러면 뒤로가기를 눌렀을 때 캡시터의 기본 동작(webView.canGoBack()이 false)이
+// 곧바로 앱 종료로 이어진다. history.pushState로 화면 이동마다 기록을 남겨두면
+// 하드웨어 뒤로가기가 popstate를 발생시켜 이전 화면으로만 돌아가고, 더 이상
+// 돌아갈 기록이 없는 최상위 화면(메인)에서만 실제로 앱이 종료된다.
+function pushScreen(id) {
+  history.pushState({ screen: id }, "");
+  showScreen(id);
+}
+
+function replaceScreen(id) {
+  history.replaceState({ screen: id }, "");
+  showScreen(id);
+}
+
+function goBackScreen() {
+  history.back();
+}
+
+window.addEventListener("popstate", (e) => {
+  const id = (e.state && e.state.screen) || "screen-main";
+  showScreen(id);
+});
 
 function getGatePassed() {
   return localStorage.getItem(GATE_KEY) === "1";
@@ -134,7 +162,7 @@ function proceedAfterGate() {
     showScreen("screen-setup");
     return;
   }
-  showScreen("screen-main");
+  replaceScreen("screen-main");
   startApp();
 }
 
@@ -171,7 +199,7 @@ function bindStaticHandlers() {
       groupCode,
       sharingEnabled: true,
     });
-    showScreen("screen-main");
+    replaceScreen("screen-main");
     startApp();
   });
 
@@ -184,9 +212,9 @@ function bindStaticHandlers() {
       $("#updateCard").classList.remove("hidden");
       $("#appVersionText").textContent = "현재 버전: " + APP_VERSION_NAME;
     }
-    showScreen("screen-settings");
+    pushScreen("screen-settings");
   });
-  $("#btnSettingsBack").addEventListener("click", () => showScreen("screen-main"));
+  $("#btnSettingsBack").addEventListener("click", goBackScreen);
 
   $("#btnCheckUpdate").addEventListener("click", checkForUpdate);
 
@@ -237,7 +265,7 @@ function bindStaticHandlers() {
       startListening();
     }
     toast("저장되었습니다.");
-    showScreen("screen-main");
+    goBackScreen();
   });
 
   $("#groupCodeDisplay").addEventListener("click", () => {
@@ -246,15 +274,25 @@ function bindStaticHandlers() {
 
   $("#btnConnectionLog").addEventListener("click", () => {
     renderConnectionLog();
-    showScreen("screen-connection-log");
+    pushScreen("screen-connection-log");
   });
-  $("#btnConnectionLogBack").addEventListener("click", () => showScreen("screen-settings"));
+  $("#btnConnectionLogBack").addEventListener("click", goBackScreen);
   $("#btnConnectionLogClear").addEventListener("click", async () => {
     const ok = await confirmDialog("연결 기록을 모두 삭제할까요?");
     if (!ok) return;
     localStorage.removeItem(CONNECTION_LOG_KEY);
     renderConnectionLog();
     toast("연결 기록을 삭제했습니다.");
+  });
+
+  $("#btnCloseAddressBox").addEventListener("click", () => {
+    selectedMemberId = null;
+    selectedMemberCheckStartUpdatedAt = null;
+    $("#selectedAddressBox").classList.add("hidden");
+  });
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") maybeLogConnectionStatuses(false);
   });
 }
 
@@ -385,6 +423,46 @@ function focusMember(lat, lng) {
   map.flyTo([lat, lng], Math.max(map.getZoom(), 16), { animate: true });
 }
 
+// 참여자 이름을 누르면 (회색으로 오프라인 표시 중이더라도) 곧바로 상세 패널을 띄운다.
+// membersRef.on("value")는 그룹 내 누구든 위치를 쓰는 순간 실시간으로 다시 호출되므로,
+// 별도의 개별 리스너 없이 renderMembers가 돌 때마다 renderConnectionCheck를 갱신해주면
+// 그 자체로 "지금 이 사람 신호가 실제로 살아있는지"를 실시간으로 보여줄 수 있다.
+function selectMember(memberId, m) {
+  selectedMemberId = memberId;
+  selectedMemberCheckStartUpdatedAt = m.updatedAt || null;
+  const hasLocation = typeof m.lat === "number" && typeof m.lng === "number";
+  if (hasLocation) {
+    focusMember(m.lat, m.lng);
+    showMemberAddress(m.name, m.lat, m.lng);
+  } else {
+    $("#selectedAddressBox").classList.remove("hidden");
+    $("#selectedAddressTitle").textContent = m.name + "님 위치";
+    $("#selectedAddressText").textContent = "아직 수신된 위치가 없습니다.";
+  }
+  renderConnectionCheck(m);
+}
+
+function renderConnectionCheck(m) {
+  const box = $("#connectionCheckStatus");
+  box.classList.remove("hidden", "connection-ok", "connection-lost");
+  const isStale = !m.updatedAt || Date.now() - m.updatedAt > STALE_MS;
+  const gotFresherSinceOpen =
+    selectedMemberCheckStartUpdatedAt != null && m.updatedAt && m.updatedAt > selectedMemberCheckStartUpdatedAt;
+  if (!isStale) {
+    box.classList.add("connection-ok");
+    box.textContent = gotFresherSinceOpen
+      ? "🟢 방금 새 신호를 수신했습니다. 실시간 연결이 정상입니다."
+      : "🟢 실시간 연결이 정상입니다.";
+  } else {
+    box.classList.add("connection-lost");
+    const minutesSince = m.updatedAt ? Math.floor((Date.now() - m.updatedAt) / 60000) : null;
+    box.textContent =
+      "🔴 신호 없음 (마지막 갱신: " +
+      (minutesSince != null ? minutesSince + "분 전" : "기록 없음") +
+      "). 새 신호가 오면 이 화면이 자동으로 갱신됩니다.";
+  }
+}
+
 // 이름 클릭 시 지도 이동과 별개로, 해당 위치의 사람이 읽을 수 있는 주소도 함께 보여준다.
 async function showMemberAddress(name, lat, lng) {
   const box = $("#selectedAddressBox");
@@ -451,6 +529,7 @@ let previousOnlineStatus = {}; // memberId -> 지난 렌더링에서 온라인(�
 
 function renderMembers(data) {
   lastMembersData = data;
+  maybeLogConnectionStatuses(false);
   const listEl = $("#memberList");
   listEl.innerHTML = "";
 
@@ -473,19 +552,18 @@ function renderMembers(data) {
       }
       previousOnlineStatus[memberId] = !isStale;
     }
-    const hasLocation = typeof m.lat === "number" && typeof m.lng === "number";
     const row = document.createElement("div");
     row.className = "member-row";
     row.innerHTML = `
       <span class="member-dot ${isStale ? "member-dot-offline" : "member-dot-online"}"></span>
-      <span class="member-name${hasLocation ? " member-name-clickable" : ""}">${m.name}${isSelf ? " (나)" : ""}</span>
+      <span class="member-name member-name-clickable">${m.name}${isSelf ? " (나)" : ""}</span>
       <span class="member-time" data-updated="${m.updatedAt || 0}">${formatRelativeTime(m.updatedAt)}</span>
     `;
-    if (hasLocation) {
-      row.querySelector(".member-name").addEventListener("click", () => {
-        focusMember(m.lat, m.lng);
-        showMemberAddress(m.name, m.lat, m.lng);
-      });
+    // 회색(오프라인)으로 보이는 친구를 눌러도 곧바로 실시간 연결 확인 패널이 뜨도록,
+    // 위치 유무와 무관하게 항상 클릭 가능하게 한다 (위치가 있으면 지도 이동도 함께).
+    row.querySelector(".member-name").addEventListener("click", () => selectMember(memberId, m));
+    if (memberId === selectedMemberId) {
+      renderConnectionCheck(m);
     }
     listEl.appendChild(row);
   });
@@ -616,13 +694,31 @@ function logConnectionStatuses() {
     entries.push({ ts: now, name: m.name, status: isStale ? "lost" : "ok", minutesSince });
   });
   appendConnectionLog(entries);
+  lastConnectionLogAt = now;
   if (!$("#screen-connection-log").classList.contains("hidden")) renderConnectionLog();
+}
+
+// 화면이 꺼지거나 앱이 백그라운드로 가면 순수 setInterval 타이머는 안드로이드에 의해
+// 지연되거나 아예 멈출 수 있어서, 그 타이머 하나에만 의존하면 "10분마다 기록"이
+// 실제로는 건너뛰어지곤 했다. 그래서 타이머 틱뿐 아니라 실제로 뭔가 일어나는
+// 시점들(그룹 데이터가 실시간으로 갱신될 때, 내 위치가 백그라운드에서 새로 보고될 때,
+// 앱이 다시 화면에 보일 때)마다 "마지막 기록 이후 10분이 지났는지"를 확인해서,
+// 지나 있으면 그 자리에서 바로 기록한다. 이 트리거들은 백그라운드 포그라운드
+// 서비스가 살아있는 한 함께 살아있으므로 기록도 계속 이어지고, 한 번 놓쳐도
+// 다음 신호가 오는 즉시 따라잡는다.
+function maybeLogConnectionStatuses(force) {
+  if (!profile) return;
+  if (force || Date.now() - lastConnectionLogAt >= CONNECTION_LOG_INTERVAL_MS) {
+    logConnectionStatuses();
+  }
 }
 
 function startConnectionLogging() {
   if (connectionLogIntervalId) clearInterval(connectionLogIntervalId);
   logConnectionStatuses();
-  connectionLogIntervalId = setInterval(logConnectionStatuses, CONNECTION_LOG_INTERVAL_MS);
+  // 정확히 10분마다가 아니라 1분마다 "10분이 지났는지"를 확인한다 - 확인 주기를
+  // 촘촘하게 둬야 타이머가 늦게 깨어나거나 한 번 건너뛰어도 금방 따라잡는다.
+  connectionLogIntervalId = setInterval(() => maybeLogConnectionStatuses(false), 60 * 1000);
 }
 
 function formatLogTime(ts) {
@@ -766,6 +862,9 @@ async function startNativeBackgroundSharing() {
         }
         if (location) {
           writeLocation(location.latitude, location.longitude, location.accuracy);
+          // 백그라운드 포그라운드 서비스가 살아서 위치를 보고하는 이 시점은, 화면이
+          // 꺼져 있어도 안드로이드가 확실히 깨워주는 순간이므로 연결 기록도 함께 따라잡는다.
+          maybeLogConnectionStatuses(false);
         }
       }
     );
