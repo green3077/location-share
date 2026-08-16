@@ -1,5 +1,5 @@
-const APP_VERSION_CODE = 4; // android/app/build.gradle의 versionCode와 항상 같이 올릴 것
-const APP_VERSION_NAME = "1.3";
+const APP_VERSION_CODE = 5; // android/app/build.gradle의 versionCode와 항상 같이 올릴 것
+const APP_VERSION_NAME = "1.4";
 const UPDATE_MANIFEST_URL = "https://green3077.github.io/location-share/version.json";
 
 const GATE_KEY = "ls_gate_v1";
@@ -8,9 +8,13 @@ const ACCESS_PASSWORD = "6003";
 const CONSENT_KEY = "ls_consent_v1";
 const PROFILE_KEY = "ls_profile_v1";
 const UPDATE_INTERVAL_MS = 3 * 60 * 1000; // 3분마다 위치 갱신 (웹 브라우저 탭이 열려있을 때만, foreground 전용)
-const STALE_MS = UPDATE_INTERVAL_MS * 3; // 이 시간 이상 갱신 없으면 "오프라인" 표시
 const NATIVE_DISTANCE_FILTER_M = 30; // 네이티브 앱: 이 거리(m) 이상 이동해야 새 위치를 기록 (배터리 절약)
 const NATIVE_WATCHER_RENEW_MS = 10 * 60 * 1000; // 네이티브 워처를 이 간격으로 재시작 (제자리에 있어도 신호 갱신 + GPS가 멈춰버린 경우 복구)
+// 네이티브 앱은 제자리에 머물러 있으면 위 재시작 시점에만 위치가 다시 보고된다. STALE_MS가
+// 재시작 간격보다 작거나 비슷하면, 재시작 직전마다 실제로는 멀쩡한 친구도 잠깐씩 회색(신호 끊김)으로
+// 깜빡이는 문제가 생긴다. 재시작 간격보다 충분히 여유(안드로이드 Doze 등으로 인한 지연 감안)를 두어
+// 이 깜빡임을 없앤다.
+const STALE_MS = NATIVE_WATCHER_RENEW_MS + 6 * 60 * 1000; // 네이티브 갱신 주기(10분) + 여유(6분) = 16분
 
 const CONNECTION_LOG_INTERVAL_MS = 10 * 60 * 1000; // 10분마다 친구별 신호 수신 상태 기록
 const CONNECTION_LOG_KEY = "ls_connection_log_v1";
@@ -58,29 +62,38 @@ function showScreen(id) {
 }
 
 // ---------- 화면 이동 기록 (안드로이드 하드웨어 뒤로가기 버튼용) ----------
-// 이 앱은 SPA(단일 페이지)라서 브라우저/웹뷰 히스토리가 원래 비어있고,
-// 그러면 뒤로가기를 눌렀을 때 캡시터의 기본 동작(webView.canGoBack()이 false)이
-// 곧바로 앱 종료로 이어진다. history.pushState로 화면 이동마다 기록을 남겨두면
-// 하드웨어 뒤로가기가 popstate를 발생시켜 이전 화면으로만 돌아가고, 더 이상
-// 돌아갈 기록이 없는 최상위 화면(메인)에서만 실제로 앱이 종료된다.
+// 예전에는 history.pushState/popstate(웹뷰 자체 히스토리)에 의존했는데, 안드로이드
+// WebView가 SPA의 pushState를 canGoBack()/goBack()에 항상 안정적으로 반영해주는 것이
+// 아니라서 실제 기기에서 하드웨어 뒤로가기를 누르면 곧바로 앱이 종료되는 문제가 있었다.
+// 그래서 웹뷰 히스토리에 전혀 기대지 않고, 화면 이동 스택을 순수 JS 배열로 직접 관리한다.
+// MainActivity.onBackPressed()가 하드웨어 뒤로가기 시 window.handleHardwareBack()을
+// 직접 호출해서 결과(true=이 화면에서 처리함 / false=더 돌아갈 화면 없음, 앱 종료)를 받는다.
+let screenStack = [];
+
 function pushScreen(id) {
-  history.pushState({ screen: id }, "");
+  screenStack.push(id);
   showScreen(id);
 }
 
-function replaceScreen(id) {
-  history.replaceState({ screen: id }, "");
+// 이 화면을 스택의 새 바닥으로 만든다 (여기서 뒤로가기를 누르면 곧장 앱 종료) - 로그인/
+// 동의/설정 같은 온보딩을 마치고 메인 화면에 진입하는 것처럼, 이전 단계로 돌아갈 필요가
+// 없어진 시점에 쓴다.
+function resetScreenStack(id) {
+  screenStack = [id];
   showScreen(id);
 }
 
 function goBackScreen() {
-  history.back();
+  if (screenStack.length <= 1) return;
+  screenStack.pop();
+  showScreen(screenStack[screenStack.length - 1]);
 }
 
-window.addEventListener("popstate", (e) => {
-  const id = (e.state && e.state.screen) || "screen-main";
-  showScreen(id);
-});
+window.handleHardwareBack = function () {
+  if (screenStack.length <= 1) return false;
+  goBackScreen();
+  return true;
+};
 
 function getGatePassed() {
   return localStorage.getItem(GATE_KEY) === "1";
@@ -136,7 +149,7 @@ function formatRelativeTime(ts) {
 
 function init() {
   if (!firebaseConfig.apiKey) {
-    showScreen("screen-no-config");
+    resetScreenStack("screen-no-config");
     return;
   }
   firebase.initializeApp(firebaseConfig);
@@ -145,7 +158,7 @@ function init() {
   bindStaticHandlers();
 
   if (!getGatePassed()) {
-    showScreen("screen-login");
+    resetScreenStack("screen-login");
     return;
   }
   proceedAfterGate();
@@ -154,15 +167,15 @@ function init() {
 // 접속 화면(공용 아이디/비밀번호) 통과 후 항상 이 경로를 거친다.
 function proceedAfterGate() {
   if (!getConsent()) {
-    showScreen("screen-consent");
+    pushScreen("screen-consent");
     return;
   }
   profile = getProfile();
   if (!profile) {
-    showScreen("screen-setup");
+    pushScreen("screen-setup");
     return;
   }
-  replaceScreen("screen-main");
+  resetScreenStack("screen-main");
   startApp();
 }
 
@@ -183,7 +196,7 @@ function bindStaticHandlers() {
   });
   $("#btnConsent").addEventListener("click", () => {
     setConsent();
-    showScreen("screen-setup");
+    pushScreen("screen-setup");
   });
 
   $("#btnSetupSave").addEventListener("click", () => {
@@ -199,7 +212,7 @@ function bindStaticHandlers() {
       groupCode,
       sharingEnabled: true,
     });
-    replaceScreen("screen-main");
+    resetScreenStack("screen-main");
     startApp();
   });
 
@@ -292,7 +305,10 @@ function bindStaticHandlers() {
   });
 
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible") maybeLogConnectionStatuses(false);
+    if (document.visibilityState === "visible") {
+      maybeLogConnectionStatuses(false);
+      refreshOnForeground();
+    }
   });
 }
 
@@ -440,6 +456,27 @@ function selectMember(memberId, m) {
     $("#selectedAddressText").textContent = "아직 수신된 위치가 없습니다.";
   }
   renderConnectionCheck(m);
+  // 실시간 리스너(웹소켓)가 백그라운드 중 조용히 끊긴 채로 있으면 화면에는 회색으로만
+  // 보일 뿐 자동으로는 복구되지 않을 수 있다. 이름을 누른 시점에 REST로 그 친구의
+  // 최신 상태를 직접 한 번 더 확인해서, 실제로는 신호가 살아있다면 곧바로 초록색으로 갱신한다.
+  forceRefreshMember(memberId);
+}
+
+// 특정 멤버 한 명의 최신 상태만 Realtime Database REST API로 즉시 조회해서 반영한다.
+// (membersRef.on("value") 리스너와 별개의 통로 - 그 리스너가 백그라운드 중 멈춰있어도
+// 이 요청은 일반 fetch라서 영향받지 않는다.)
+async function forceRefreshMember(memberId) {
+  if (!profile || !firebaseConfig.databaseURL) return;
+  try {
+    const url = `${firebaseConfig.databaseURL}/groups/${encodeURIComponent(profile.groupCode)}/members/${encodeURIComponent(memberId)}.json?t=${Date.now()}`;
+    const res = await fetch(url);
+    const data = await res.json();
+    if (!data) return;
+    lastMembersData = { ...lastMembersData, [memberId]: data };
+    renderMembers(lastMembersData);
+  } catch (e) {
+    console.warn("forceRefreshMember failed", e);
+  }
 }
 
 function renderConnectionCheck(m) {
@@ -522,6 +559,25 @@ function startListening() {
 function stopListening() {
   if (membersRef) membersRef.off();
   membersRef = null;
+}
+
+// 앱이 오래 백그라운드에 있다 다시 화면에 나타났을 때, Firebase SDK의 실시간(웹소켓)
+// 리스너가 조용히 끊긴 채로 재연결되지 않은 상태일 수 있다 - 그러면 다른 참여자들이
+// 실제로는 계속 신호를 보내고 있어도 이 기기 화면에서는 영원히 회색으로 멈춰 보이게 된다.
+// 화면이 다시 보일 때마다 (1) REST로 그룹 전체 최신 상태를 즉시 한 번 받아와 화면에 반영하고
+// (2) 리스너 자체도 껐다 켜서 웹소켓 연결을 새로 맺어, 이후 실시간 갱신도 다시 정상 동작하게 한다.
+async function refreshOnForeground() {
+  if (!profile || !membersRef) return;
+  try {
+    const url = `${firebaseConfig.databaseURL}/groups/${encodeURIComponent(profile.groupCode)}/members.json?t=${Date.now()}`;
+    const res = await fetch(url);
+    const data = await res.json();
+    renderMembers(data || {});
+  } catch (e) {
+    console.warn("refreshOnForeground: REST refresh failed", e);
+  }
+  stopListening();
+  startListening();
 }
 
 let lastMembersData = {};
