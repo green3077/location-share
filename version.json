@@ -1,6 +1,6 @@
 {
-  "versionCode": 10,
-  "versionName": "1.9",
+  "versionCode": 11,
+  "versionName": "1.10",
   "apkUrl": "https://green3077.github.io/location-share/location-share.apk",
-  "notes": "회색(오프라인)인 친구 이름을 누르면 요청만 보내고 기다리는 대신, 응답이 올 때까지 3초 간격으로 능동적으로 재확인해서 받아오는 즉시 초록색으로 바뀌도록 개선"
+  "notes": "친구 이름을 누르면 그 친구가 지금 어떤 앱 버전을 쓰고 있는지 위치 상세 패널에 표시"
 }

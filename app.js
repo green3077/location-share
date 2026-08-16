@@ -1,5 +1,5 @@
-const APP_VERSION_CODE = 10; // android/app/build.gradle의 versionCode와 항상 같이 올릴 것
-const APP_VERSION_NAME = "1.9";
+const APP_VERSION_CODE = 11; // android/app/build.gradle의 versionCode와 항상 같이 올릴 것
+const APP_VERSION_NAME = "1.10";
 const UPDATE_MANIFEST_URL = "https://green3077.github.io/location-share/version.json";
 
 const GATE_KEY = "ls_gate_v1";
@@ -471,6 +471,9 @@ function selectMember(memberId, m) {
     $("#selectedAddressTitle").textContent = m.name + "님 위치";
     $("#selectedAddressText").textContent = "아직 수신된 위치가 없습니다.";
   }
+  $("#selectedAddressVersion").textContent = m.versionName
+    ? `앱 버전: ${m.versionName}`
+    : "앱 버전: 확인 불가 (오래된 버전)";
   const isStale = !m.updatedAt || Date.now() - m.updatedAt > STALE_MS;
   if (memberId !== profile.memberId && isStale) {
     // 회색(오프라인)인 친구는 "요청을 보내고 기다리는" 느낌 대신, 누르는 즉시 위치를 받아오는
@@ -768,6 +771,9 @@ function renderMembers(data) {
     row.querySelector(".member-name").addEventListener("click", () => selectMember(memberId, m));
     if (memberId === selectedMemberId && awaitingLocationResponseFor !== memberId) {
       renderConnectionCheck(m);
+      $("#selectedAddressVersion").textContent = m.versionName
+        ? `앱 버전: ${m.versionName}`
+        : "앱 버전: 확인 불가 (오래된 버전)";
     }
     listEl.appendChild(row);
   });
@@ -1047,6 +1053,7 @@ function writeLocation(lat, lng, accuracy) {
       lat,
       lng,
       accuracy,
+      versionName: APP_VERSION_NAME,
       updatedAt: { ".sv": "timestamp" },
     }),
   }).catch((err) => console.warn("writeLocation failed", err));
