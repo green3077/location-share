@@ -1,5 +1,5 @@
-const APP_VERSION_CODE = 6; // android/app/build.gradle의 versionCode와 항상 같이 올릴 것
-const APP_VERSION_NAME = "1.5";
+const APP_VERSION_CODE = 7; // android/app/build.gradle의 versionCode와 항상 같이 올릴 것
+const APP_VERSION_NAME = "1.6";
 const UPDATE_MANIFEST_URL = "https://green3077.github.io/location-share/version.json";
 
 const GATE_KEY = "ls_gate_v1";
@@ -48,6 +48,8 @@ let kakaoMap = null; // kakao.maps.Map (카카오맵을 선택했을 때만 사�
 let kakaoMarkers = {}; // memberId -> { marker, overlay }
 let mapHasFitOnce = false;
 let membersRef = null;
+let myRequestRef = null;
+let myRequestListenerReady = false;
 let shareIntervalId = null;
 let profile = null;
 let listRefreshIntervalId = null;
@@ -471,6 +473,38 @@ function selectMember(memberId, m) {
   // 보일 뿐 자동으로는 복구되지 않을 수 있다. 이름을 누른 시점에 REST로 그 친구의
   // 최신 상태를 직접 한 번 더 확인해서, 실제로는 신호가 살아있다면 곧바로 초록색으로 갱신한다.
   forceRefreshMember(memberId);
+
+  // 위 REST 재확인은 "이미 보낸 신호를 놓쳤을 수도 있는" 경우를 잡아줄 뿐, 친구 쪽이 실제로
+  // 오래 전에 멈춘 상태라면 아무 소용이 없다. 그런 경우를 위해, 회색(오프라인)인 친구에게는
+  // "지금 위치를 다시 보내달라"는 요청도 함께 남긴다 - 친구 앱이 아직 실행 중(포그라운드 또는
+  // 백그라운드 서비스)이면 이 요청을 감지해서 곧바로 위치를 다시 보내고, 그러면 이 화면은
+  // 평소처럼 실시간 리스너로 자동 초록색이 된다.
+  const isStale = !m.updatedAt || Date.now() - m.updatedAt > STALE_MS;
+  if (memberId !== profile.memberId && isStale) {
+    requestFreshLocationFrom(memberId, m.name);
+  }
+}
+
+// 회색(오프라인)인 친구의 Firebase 항목에 "지금 위치를 다시 보내달라"는 요청 플래그를 남긴다.
+// 전체 위치 데이터를 덮어쓰지 않도록 PATCH를 쓴다 - 친구가 다음번에 위치를 쓸 때(PUT)는
+// 노드 전체가 새 값으로 교체되므로, 이 요청 플래그는 응답이 오면 자연스럽게 사라진다
+// (따로 지워줄 필요 없음).
+async function requestFreshLocationFrom(memberId, name) {
+  if (!profile || !firebaseConfig.databaseURL) return;
+  try {
+    const url = `${firebaseConfig.databaseURL}/groups/${encodeURIComponent(profile.groupCode)}/members/${encodeURIComponent(memberId)}.json`;
+    await fetch(url, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        locationRequestedAt: { ".sv": "timestamp" },
+        locationRequestedByName: profile.name,
+      }),
+    });
+    toast(`${name}님에게 위치 요청을 보냈습니다.`);
+  } catch (e) {
+    console.warn("requestFreshLocationFrom failed", e);
+  }
 }
 
 // 특정 멤버 한 명의 최신 상태만 Realtime Database REST API로 즉시 조회해서 반영한다.
@@ -565,11 +599,36 @@ function removeMarker(memberId) {
 function startListening() {
   membersRef = db.ref(`groups/${profile.groupCode}/members`);
   membersRef.on("value", (snapshot) => renderMembers(snapshot.val() || {}));
+
+  myRequestListenerReady = false;
+  myRequestRef = db.ref(`groups/${profile.groupCode}/members/${profile.memberId}/locationRequestedAt`);
+  myRequestRef.on("value", handleIncomingLocationRequest);
 }
 
 function stopListening() {
   if (membersRef) membersRef.off();
   membersRef = null;
+  if (myRequestRef) myRequestRef.off();
+  myRequestRef = null;
+}
+
+// 다른 참여자가 회색(오프라인)인 내 이름을 눌러 위치를 요청하면(requestFreshLocationFrom),
+// 이 리스너가 그걸 감지해서 지금 위치를 곧바로 한 번 더 보낸다. 리스너를 새로 구독할 때 오는
+// 첫 스냅샷은 예전 세션에 남아있던 오래된 요청일 수 있으므로 반응하지 않고 건너뛴다 - 그렇지
+// 않으면 앱을 열 때마다 과거 요청에 계속 재반응하게 된다.
+function handleIncomingLocationRequest(snapshot) {
+  if (!myRequestListenerReady) {
+    myRequestListenerReady = true;
+    return;
+  }
+  const requestedAt = snapshot.val();
+  if (!requestedAt || !profile || !profile.sharingEnabled) return;
+  toast("친구가 내 위치를 요청해서 다시 보냅니다.");
+  if (IS_NATIVE) {
+    renewNativeWatcher(); // 워처를 재시작(stale:true)하면 제자리에 있어도 즉시 한 번 더 보고된다.
+  } else {
+    requestLocationOnce();
+  }
 }
 
 // 앱이 오래 백그라운드에 있다 다시 화면에 나타났을 때, Firebase SDK의 실시간(웹소켓)
