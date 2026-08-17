@@ -1,6 +1,6 @@
 {
-  "versionCode": 12,
-  "versionName": "1.11",
+  "versionCode": 14,
+  "versionName": "1.13",
   "apkUrl": "https://green3077.github.io/location-share/location-share.apk",
-  "notes": "설정에서 그룹 코드를 바꾼 뒤 지도가 잘려 보이던 문제 수정, 그룹 변경 시 상단 그룹 표시가 즉시 갱신되도록 수정"
+  "notes": "친구 신호가 끊기지 않도록 위치 공유를 순수 네이티브 서비스(앱이 꺼져도 자동 재시작)로 통합, 그룹을 바꿨다가 돌아올 때 예전 친구가 겹쳐 보이던 문제를 근본 원인(뒤늦게 도착하는 옛 그룹 데이터)까지 수정"
 }

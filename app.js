@@ -1,5 +1,5 @@
-const APP_VERSION_CODE = 12; // android/app/build.gradle의 versionCode와 항상 같이 올릴 것
-const APP_VERSION_NAME = "1.11";
+const APP_VERSION_CODE = 14; // android/app/build.gradle의 versionCode와 항상 같이 올릴 것
+const APP_VERSION_NAME = "1.13";
 const UPDATE_MANIFEST_URL = "https://green3077.github.io/location-share/version.json";
 
 const GATE_KEY = "ls_gate_v1";
@@ -7,31 +7,27 @@ const ACCESS_ID = "6003";
 const ACCESS_PASSWORD = "6003";
 const CONSENT_KEY = "ls_consent_v1";
 const PROFILE_KEY = "ls_profile_v1";
-const UPDATE_INTERVAL_MS = 3 * 60 * 1000; // 3분마다 위치 갱신 (웹 브라우저 탭이 열려있을 때만, foreground 전용)
-const NATIVE_DISTANCE_FILTER_M = 30; // 네이티브 앱: 이 거리(m) 이상 이동해야 새 위치를 기록 (배터리 절약)
-const NATIVE_WATCHER_RENEW_MS = 10 * 60 * 1000; // 네이티브 워처를 이 간격으로 재시작 (제자리에 있어도 신호 갱신 + GPS가 멈춰버린 경우 복구)
-// 네이티브 앱은 제자리에 머물러 있으면 위 재시작 시점에만 위치가 다시 보고된다. STALE_MS가
-// 재시작 간격보다 작거나 비슷하면, 재시작 직전마다 실제로는 멀쩡한 친구도 잠깐씩 회색(신호 끊김)으로
-// 깜빡이는 문제가 생긴다. 재시작 간격보다 충분히 여유(안드로이드 Doze 등으로 인한 지연 감안)를 두어
-// 이 깜빡임을 없앤다.
-const STALE_MS = NATIVE_WATCHER_RENEW_MS + 6 * 60 * 1000; // 네이티브 갱신 주기(10분) + 여유(6분) = 16분
+const UPDATE_INTERVAL_MS = 3 * 60 * 1000; // 3분마다 위치 갱신 (웹: 탭이 열려있을 때만. 네이티브: BootLocationForegroundService가 같은 3분 간격을 쓴다 - android/.../BootLocationForegroundService.java의 UPDATE_INTERVAL_MS와 항상 같이 맞출 것)
+// 네이티브 앱은 이제(2026-08-17) 순수 네이티브 포그라운드 서비스가 "움직임과 무관하게" 이 간격대로
+// 계속 위치를 보고한다(예전의 distanceFilter 기반 워처와 달리 - 그래서 안 움직여도 신호가 안 끊긴다).
+// 그래도 GPS 확보 지연/일시적 네트워크 문제를 감안해 갱신 주기의 3배 정도 여유를 둔다.
+const STALE_MS = UPDATE_INTERVAL_MS * 3; // 9분
 
 const CONNECTION_LOG_INTERVAL_MS = 10 * 60 * 1000; // 10분마다 친구별 신호 수신 상태 기록
 const CONNECTION_LOG_KEY = "ls_connection_log_v1";
 const CONNECTION_LOG_MAX_ENTRIES = 300; // 기기 저장공간 보호용 상한 (오래된 기록부터 삭제)
 
-// 네이티브 앱(APK)에서는 Capacitor의 백그라운드 위치 플러그인을 통해 화면이 꺼지거나
-// 다른 앱으로 전환해도 계속 위치를 공유한다. 순수 웹(GitHub Pages 등)에서는 이 플러그인이
-// 없으므로 브라우저 탭이 열려있는 동안만 setInterval로 주기 갱신하는 기존 방식을 그대로 쓴다.
+// 네이티브 앱(APK)에서는 순수 네이티브 포그라운드 서비스(BootLocationForegroundService)가 화면이
+// 꺼지거나 다른 앱으로 전환해도, 심지어 안드로이드가 앱 프로세스를 죽여도(START_STICKY로 스스로
+// 재시작) 계속 위치를 공유한다 - syncNativeProfile()이 그 서비스를 시작/정지시키는 유일한 통로다.
+// 순수 웹(GitHub Pages 등)에서는 이런 네이티브 서비스가 없으므로 브라우저 탭이 열려있는 동안만
+// setInterval로 주기 갱신하는 기존 방식을 그대로 쓴다.
 const IS_NATIVE = !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
-const BackgroundGeolocation = IS_NATIVE ? window.Capacitor.registerPlugin("BackgroundGeolocation") : null;
 const LocalNotifications = IS_NATIVE ? window.Capacitor.registerPlugin("LocalNotifications") : null;
 const NativeProfileBridge = IS_NATIVE ? window.Capacitor.registerPlugin("NativeProfileBridge") : null;
 const UpdateBridge = IS_NATIVE ? window.Capacitor.registerPlugin("UpdateBridge") : null;
 const BatteryOptimizationBridge = IS_NATIVE ? window.Capacitor.registerPlugin("BatteryOptimizationBridge") : null;
 const BATTERY_OPT_ASKED_KEY = "ls_battery_opt_asked_v1";
-let bgWatcherId = null;
-let nativeRenewIntervalId = null;
 
 const MAP_PROVIDER_KEY = "ls_map_provider_v1";
 function getMapProvider() {
@@ -49,6 +45,12 @@ let kakaoMarkers = {}; // memberId -> { marker, overlay }
 let mapHasFitOnce = false;
 let membersRef = null;
 let myRequestRef = null;
+// 그룹을 바꿀 때마다 하나씩 올라간다 - 그룹 전환 직전에 이미 날아가 있던 비동기 요청(웹소켓
+// 리스너의 뒤늦은 콜백, REST fetch의 뒤늦은 응답 등)이 나중에 도착해도, 그 요청이 시작될 때
+// 캡처해둔 세대 번호가 지금 세대와 다르면 결과를 버린다 - "다른 그룹 갔다가 돌아오면 예전
+// 사람이 유령처럼 겹쳐 보이는" 문제의 실제 원인(마커를 지운 직후에 옛 그룹 데이터가 뒤늦게
+// 도착해 다시 그려짐)을 근본적으로 막는다.
+let groupListenGeneration = 0;
 let lastHandledLocationRequestAt = "__unset__";
 let locationRequestPollIntervalId = null;
 let shareIntervalId = null;
@@ -299,8 +301,11 @@ function bindStaticHandlers() {
     saveProfile(profile);
     $("#groupCodeDisplay").textContent = profile.groupCode;
     if (groupChanged) {
-      markers = {};
-      kakaoMarkers = {};
+      // markers/kakaoMarkers를 그냥 {}로 비우면 레지스트리만 지워질 뿐 지도 위 마커
+      // 레이어는 그대로 남아 고아가 된다 - 나중에 같은 그룹으로 돌아오면 새 마커가
+      // 또 생겨서 같은 사람이 두 개로 겹쳐 보이는 원인이었다. removeMarker로 실제
+      // 레이어까지 지운 뒤 레지스트리를 비운다.
+      Object.keys(kakaoMap ? kakaoMarkers : markers).forEach(removeMarker);
       mapHasFitOnce = false; // 새 그룹 멤버들의 위치에 맞춰 지도가 다시 자동으로 맞춰지도록
       startListening();
     }
@@ -475,18 +480,24 @@ function selectMember(memberId, m) {
   selectedMemberId = memberId;
   selectedMemberCheckStartUpdatedAt = m.updatedAt || null;
   const hasLocation = typeof m.lat === "number" && typeof m.lng === "number";
+  const isStale = !m.updatedAt || Date.now() - m.updatedAt > STALE_MS;
+  $("#selectedAddressBox").classList.remove("hidden");
+  $("#selectedAddressTitle").textContent = m.name + "님 위치";
   if (hasLocation) {
     focusMember(m.lat, m.lng);
-    showMemberAddress(m.name, m.lat, m.lng);
+    if (isStale) {
+      // 오프라인 상태에서는 주소를 이 칸이 아니라 아래 연결 확인 박스에 "마지막으로 신호
+      // 받은 위치"로 시각과 함께 합쳐서 보여준다 (renderConnectionCheck에서 처리).
+      $("#selectedAddressText").textContent = "";
+    } else {
+      showMemberAddress(m.name, m.lat, m.lng);
+    }
   } else {
-    $("#selectedAddressBox").classList.remove("hidden");
-    $("#selectedAddressTitle").textContent = m.name + "님 위치";
     $("#selectedAddressText").textContent = "아직 수신된 위치가 없습니다.";
   }
   $("#selectedAddressVersion").textContent = m.versionName
     ? `앱 버전: ${m.versionName}`
     : "앱 버전: 확인 불가 (오래된 버전)";
-  const isStale = !m.updatedAt || Date.now() - m.updatedAt > STALE_MS;
   if (memberId !== profile.memberId && isStale) {
     // 회색(오프라인)인 친구는 "요청을 보내고 기다리는" 느낌 대신, 누르는 즉시 위치를 받아오는
     // 중이라는 걸 보여주고 응답이 오면 곧바로 초록색으로 바뀌도록 능동적으로 짧은 간격으로
@@ -541,10 +552,12 @@ function startAwaitingFreshLocation(memberId, name, baselineUpdatedAt) {
 
 async function pollAwaitingFreshLocation(memberId, baselineUpdatedAt, deadline) {
   if (selectedMemberId !== memberId || awaitingLocationResponseFor !== memberId) return; // 그 사이 다른 화면/멤버로 이동함
+  const myGeneration = groupListenGeneration;
   try {
     const url = `${firebaseConfig.databaseURL}/groups/${encodeURIComponent(profile.groupCode)}/members/${encodeURIComponent(memberId)}.json?t=${Date.now()}`;
     const res = await fetch(url);
     const data = await res.json();
+    if (myGeneration !== groupListenGeneration) return; // 응답 오는 사이 그룹이 바뀌었으면 버린다
     if (data) {
       lastMembersData = { ...lastMembersData, [memberId]: data };
       if (data.updatedAt && data.updatedAt > baselineUpdatedAt) {
@@ -576,11 +589,13 @@ async function pollAwaitingFreshLocation(memberId, baselineUpdatedAt, deadline) 
 // 이 요청은 일반 fetch라서 영향받지 않는다.)
 async function forceRefreshMember(memberId) {
   if (!profile || !firebaseConfig.databaseURL) return;
+  const myGeneration = groupListenGeneration;
   try {
     const url = `${firebaseConfig.databaseURL}/groups/${encodeURIComponent(profile.groupCode)}/members/${encodeURIComponent(memberId)}.json?t=${Date.now()}`;
     const res = await fetch(url);
     const data = await res.json();
     if (!data) return;
+    if (myGeneration !== groupListenGeneration) return; // 응답 오는 사이 그룹이 바뀌었으면 버린다
     lastMembersData = { ...lastMembersData, [memberId]: data };
     renderMembers(lastMembersData);
   } catch (e) {
@@ -599,14 +614,25 @@ function renderConnectionCheck(m) {
     box.textContent = gotFresherSinceOpen
       ? "🟢 방금 새 신호를 수신했습니다. 실시간 연결이 정상입니다."
       : "🟢 실시간 연결이 정상입니다.";
-  } else {
-    box.classList.add("connection-lost");
-    const minutesSince = m.updatedAt ? Math.floor((Date.now() - m.updatedAt) / 60000) : null;
+    return;
+  }
+  box.classList.add("connection-lost");
+  const minutesSince = m.updatedAt ? Math.floor((Date.now() - m.updatedAt) / 60000) : null;
+  const timeText = minutesSince != null ? minutesSince + "분 전" : "기록 없음";
+  box.textContent = "🔴 신호 없음 (마지막 갱신: " + timeText + "). 새 신호가 오면 이 화면이 자동으로 갱신됩니다.";
+  if (typeof m.lat !== "number" || typeof m.lng !== "number") return;
+  // 주소는 역지오코딩이 필요해 바로 못 채우므로, 시간 정보를 먼저 보여준 뒤 주소가
+  // 도착하면 "마지막으로 신호 받은 위치"로 합쳐서 보여준다.
+  const checkedMemberId = selectedMemberId;
+  reverseGeocodeCached(m.lat, m.lng).then((address) => {
+    // 그 사이 다른 사람을 선택했거나 온라인으로 바뀌었으면 늦게 도착한 결과를 반영하지 않는다.
+    if (selectedMemberId !== checkedMemberId || !box.classList.contains("connection-lost")) return;
     box.textContent =
       "🔴 신호 없음 (마지막 갱신: " +
-      (minutesSince != null ? minutesSince + "분 전" : "기록 없음") +
-      "). 새 신호가 오면 이 화면이 자동으로 갱신됩니다.";
-  }
+      timeText +
+      ")\n마지막으로 신호 받은 위치: " +
+      (address || "주소를 찾을 수 없습니다.");
+  });
 }
 
 // 이름 클릭 시 지도 이동과 별개로, 해당 위치의 사람이 읽을 수 있는 주소도 함께 보여준다.
@@ -661,8 +687,15 @@ function removeMarker(memberId) {
 // ---------- Firebase 연동 ----------
 
 function startListening() {
+  groupListenGeneration++;
+  const myGeneration = groupListenGeneration;
+  lastMembersData = {}; // 이전 그룹의 캐시된 데이터가 그대로 남아 다음 렌더링에 섞이지 않도록 비운다
+
   membersRef = db.ref(`groups/${profile.groupCode}/members`);
-  membersRef.on("value", (snapshot) => renderMembers(snapshot.val() || {}));
+  membersRef.on("value", (snapshot) => {
+    if (myGeneration !== groupListenGeneration) return; // 그룹이 바뀐 뒤 뒤늦게 도착한 옛 그룹 값은 버린다
+    renderMembers(snapshot.val() || {});
+  });
 
   // 위치 요청 감지는 두 경로를 함께 쓴다: (1) 실시간 리스너(포그라운드에서는 거의 즉시 반응)와
   // (2) 1분마다 REST로 직접 확인하는 폴링. 실시간 리스너(SDK 웹소켓)만 쓰면 화면이 꺼진 채
@@ -671,7 +704,10 @@ function startListening() {
   // lastHandledLocationRequestAt으로 중복을 막는다.
   lastHandledLocationRequestAt = "__unset__";
   myRequestRef = db.ref(`groups/${profile.groupCode}/members/${profile.memberId}/locationRequestedAt`);
-  myRequestRef.on("value", (snapshot) => handleLocationRequestValue(snapshot.val()));
+  myRequestRef.on("value", (snapshot) => {
+    if (myGeneration !== groupListenGeneration) return;
+    handleLocationRequestValue(snapshot.val());
+  });
 
   if (locationRequestPollIntervalId) clearInterval(locationRequestPollIntervalId);
   locationRequestPollIntervalId = setInterval(pollForLocationRequest, 60 * 1000);
@@ -717,11 +753,9 @@ function handleLocationRequestValue(requestedAt) {
   lastHandledLocationRequestAt = requestedAt;
   if (!profile || !profile.sharingEnabled) return;
   toast("친구가 내 위치를 요청해서 다시 보냅니다.");
-  if (IS_NATIVE) {
-    renewNativeWatcher(); // 워처를 재시작(stale:true)하면 제자리에 있어도 즉시 한 번 더 보고된다.
-  } else {
-    requestLocationOnce();
-  }
+  // navigator.geolocation은 네이티브 WebView에서도 그대로 동작하는 표준 웹 API라, 백그라운드
+  // 서비스를 건드리지 않고도 즉시 한 번 위치를 받아와 바로 보낼 수 있다.
+  requestLocationOnce();
 }
 
 // 앱이 오래 백그라운드에 있다 다시 화면에 나타났을 때, Firebase SDK의 실시간(웹소켓)
@@ -731,14 +765,17 @@ function handleLocationRequestValue(requestedAt) {
 // (2) 리스너 자체도 껐다 켜서 웹소켓 연결을 새로 맺어, 이후 실시간 갱신도 다시 정상 동작하게 한다.
 async function refreshOnForeground() {
   if (!profile || !membersRef) return;
+  const myGeneration = groupListenGeneration;
   try {
     const url = `${firebaseConfig.databaseURL}/groups/${encodeURIComponent(profile.groupCode)}/members.json?t=${Date.now()}`;
     const res = await fetch(url);
     const data = await res.json();
+    if (myGeneration !== groupListenGeneration) return; // 응답 오는 사이 그룹이 바뀌었으면 버린다
     renderMembers(data || {});
   } catch (e) {
     console.warn("refreshOnForeground: REST refresh failed", e);
   }
+  if (myGeneration !== groupListenGeneration) return; // startListening을 이미 다른 그룹으로 다시 호출했을 것
   stopListening();
   startListening();
 }
@@ -1095,9 +1132,16 @@ function requestLocationOnce() {
   );
 }
 
+// 네이티브(APK)에서는 위치 공유 루프 자체를 이 JS가 돌리지 않는다 - syncNativeProfile()이
+// NativeProfileBridge.save()를 통해 BootLocationForegroundService(순수 네이티브, WebView와
+// 무관하게 동작, START_STICKY라 죽어도 스스로 재시작)를 시작/정지시키는 게 유일한 통로다.
+// (2026-08-17: 예전엔 여기서 @capacitor-community/background-geolocation의 addWatcher()로 직접
+// 워처를 돌리고 10분마다 재시작까지 했는데, 그 경로는 앱 프로세스가 살아있을 때만 동작해서
+// 안드로이드가 프로세스를 통째로 죽이면 복구할 방법이 없었다 - "친구 신호가 잘 끊긴다"는
+// 문제의 실제 원인이었다. 순수 네이티브 서비스 하나로 합쳐서 이 문제를 근본적으로 없앴다.)
 function startSharingLoop() {
   if (IS_NATIVE) {
-    startNativeBackgroundSharing();
+    syncNativeProfile(); // profile.sharingEnabled은 이미 true로 저장된 뒤 호출되므로 서비스가 시작된다
     return;
   }
   if (shareIntervalId) return;
@@ -1107,92 +1151,13 @@ function startSharingLoop() {
 
 function stopSharingLoop() {
   if (IS_NATIVE) {
-    stopNativeBackgroundSharing();
+    syncNativeProfile(); // profile.sharingEnabled이 이미 false로 저장된 뒤 호출되므로 서비스가 멈춘다
     return;
   }
   if (shareIntervalId) {
     clearInterval(shareIntervalId);
     shareIntervalId = null;
   }
-}
-
-// ---------- 네이티브 백그라운드 위치 공유 (안드로이드 APK 전용) ----------
-// @capacitor-community/background-geolocation은 안드로이드에서 포그라운드 서비스 +
-// 지속 알림을 통해 화면이 꺼지거나 다른 앱으로 전환해도 위치 갱신을 계속 받을 수 있게 해준다.
-// 알림 표시 권한(POST_NOTIFICATIONS, 안드로이드 13+)은 이 플러그인이 직접 요청하지 않으므로
-// LocalNotifications로 먼저 요청한다 (플러그인 공식 문서 권장 방식).
-//
-// distanceFilter(30m)는 "그만큼 움직여야 새 위치를 보고한다"는 필터라서, 제자리에 계속
-// 머물러 있으면 안드로이드가 새 위치를 아예 전달하지 않고, updatedAt도 갱신되지 않아
-// 일정 시간 후 "신호 끊김(회색)"으로 보인다. 게다가 기기/제조사의 배터리 최적화가
-// GPS 워처 자체를 조용히 멈춰버리면, 그 이후 실제로 움직여도 새 위치가 잡히지 않는
-// 문제가 생길 수 있다. 이를 보완하기 위해 워처를 주기적으로 완전히 재시작한다:
-// 재시작 시점에는 distanceFilter 기준(직전 위치)이 초기화되므로 제자리에 있어도 위치가
-// 한 번 다시 보고되고(신호 살아있음 확인), 혹시 멈춰있던 GPS 워처도 다시 살아난다.
-async function startNativeBackgroundSharing() {
-  if (bgWatcherId) return;
-  try {
-    await LocalNotifications.requestPermissions();
-  } catch (e) {
-    console.warn("notification permission request failed", e);
-  }
-  try {
-    bgWatcherId = await BackgroundGeolocation.addWatcher(
-      {
-        backgroundMessage: "가족/지인에게 내 위치를 공유하고 있습니다. 취소하면 배터리 소모를 줄일 수 있습니다.",
-        backgroundTitle: "위치 공유 중",
-        requestPermissions: true,
-        stale: true, // 워처 시작/재시작 직후 캐시된 마지막 위치를 즉시 한 번 보고 (제자리라도 신호 갱신)
-        distanceFilter: NATIVE_DISTANCE_FILTER_M,
-      },
-      (location, error) => {
-        if (error) {
-          console.warn("background geolocation error", error);
-          if (error.code === "NOT_AUTHORIZED") {
-            toast("위치 권한이 필요합니다. 설정에서 위치 권한을 허용해주세요.");
-          }
-          return;
-        }
-        if (location) {
-          writeLocation(location.latitude, location.longitude, location.accuracy);
-          // 백그라운드 포그라운드 서비스가 살아서 위치를 보고하는 이 시점은, 화면이
-          // 꺼져 있어도 안드로이드가 확실히 깨워주는 순간이므로 연결 기록도 함께 따라잡는다.
-          maybeLogConnectionStatuses(false);
-        }
-      }
-    );
-  } catch (e) {
-    console.error("failed to start background watcher", e);
-    toast("백그라운드 위치 공유를 시작하지 못했습니다.");
-    return;
-  }
-  if (!nativeRenewIntervalId) {
-    nativeRenewIntervalId = setInterval(renewNativeWatcher, NATIVE_WATCHER_RENEW_MS);
-  }
-}
-
-// 워처를 완전히 내렸다가 새로 등록한다. removeWatcher/addWatcher 둘 다 실패해도 무시하고
-// 계속 진행 - 다음 갱신 주기에 다시 시도되므로 여기서 막히면 오히려 공유가 영영 멈춘다.
-async function renewNativeWatcher() {
-  if (!bgWatcherId) return; // 공유가 꺼져 있으면 아무것도 하지 않음
-  const oldId = bgWatcherId;
-  bgWatcherId = null;
-  try {
-    await BackgroundGeolocation.removeWatcher({ id: oldId });
-  } catch (e) {
-    console.warn("renewNativeWatcher: removeWatcher failed", e);
-  }
-  await startNativeBackgroundSharing();
-}
-
-function stopNativeBackgroundSharing() {
-  if (nativeRenewIntervalId) {
-    clearInterval(nativeRenewIntervalId);
-    nativeRenewIntervalId = null;
-  }
-  if (!bgWatcherId) return;
-  BackgroundGeolocation.removeWatcher({ id: bgWatcherId });
-  bgWatcherId = null;
 }
 
 window.addEventListener("load", init);
