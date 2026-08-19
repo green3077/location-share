@@ -1,6 +1,6 @@
 {
-  "versionCode": 14,
-  "versionName": "1.13",
+  "versionCode": 15,
+  "versionName": "1.14",
   "apkUrl": "https://green3077.github.io/location-share/location-share.apk",
-  "notes": "친구 신호가 끊기지 않도록 위치 공유를 순수 네이티브 서비스(앱이 꺼져도 자동 재시작)로 통합, 그룹을 바꿨다가 돌아올 때 예전 친구가 겹쳐 보이던 문제를 근본 원인(뒤늦게 도착하는 옛 그룹 데이터)까지 수정"
+  "notes": "설정에서 \"내 위치 기록하기\"를 켜면 10분마다 위치가 기록되어, 다른 참여자가 내 이름을 눌러 지난 위치 기록을 볼 수 있는 기능 추가"
 }

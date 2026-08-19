@@ -1,5 +1,5 @@
-const APP_VERSION_CODE = 14; // android/app/build.gradle의 versionCode와 항상 같이 올릴 것
-const APP_VERSION_NAME = "1.13";
+const APP_VERSION_CODE = 15; // android/app/build.gradle의 versionCode와 항상 같이 올릴 것
+const APP_VERSION_NAME = "1.14";
 const UPDATE_MANIFEST_URL = "https://green3077.github.io/location-share/version.json";
 
 const GATE_KEY = "ls_gate_v1";
@@ -16,6 +16,13 @@ const STALE_MS = UPDATE_INTERVAL_MS * 3; // 9분
 const CONNECTION_LOG_INTERVAL_MS = 10 * 60 * 1000; // 10분마다 친구별 신호 수신 상태 기록
 const CONNECTION_LOG_KEY = "ls_connection_log_v1";
 const CONNECTION_LOG_MAX_ENTRIES = 300; // 기기 저장공간 보호용 상한 (오래된 기록부터 삭제)
+
+// 설정에서 "내 위치 기록하기"를 켠 사람만, 자신의 위치를 10분 간격으로 그룹 서버에 남긴다.
+// 네이티브 앱에서는 BootLocationForegroundService.java가 같은 간격으로 별도 구현한다
+// (JS가 아예 실행되지 않는 백그라운드 상태에서도 기록되어야 하므로) - 두 값을 항상 같이 맞출 것.
+const LOCATION_HISTORY_INTERVAL_MS = 10 * 60 * 1000;
+const LOCATION_HISTORY_LAST_WRITE_KEY = "ls_history_last_write_v1"; // 웹 전용 스로틀 기준 (네이티브는 SharedPreferences에 별도 보관)
+const LOCATION_HISTORY_MAX_ENTRIES = 500; // 기록 화면에 보여줄 최근 개수 (약 3일치)
 
 // 네이티브 앱(APK)에서는 순수 네이티브 포그라운드 서비스(BootLocationForegroundService)가 화면이
 // 꺼지거나 다른 앱으로 전환해도, 심지어 안드로이드가 앱 프로세스를 죽여도(START_STICKY로 스스로
@@ -144,6 +151,7 @@ function syncNativeProfile() {
   if (!IS_NATIVE || !NativeProfileBridge || !profile) return;
   NativeProfileBridge.save({
     sharingEnabled: !!profile.sharingEnabled,
+    historyEnabled: !!profile.locationHistoryEnabled,
     memberId: profile.memberId,
     name: profile.name,
     groupCode: profile.groupCode,
@@ -230,6 +238,7 @@ function bindStaticHandlers() {
       name,
       groupCode,
       sharingEnabled: true,
+      locationHistoryEnabled: false,
     });
     resetScreenStack("screen-main");
     startApp();
@@ -239,6 +248,7 @@ function bindStaticHandlers() {
     $("#settingsName").value = profile.name;
     $("#settingsGroupCode").value = profile.groupCode;
     $("#sharingToggle").checked = profile.sharingEnabled;
+    $("#historyToggle").checked = !!profile.locationHistoryEnabled;
     $("#mapProviderSelect").value = getMapProvider();
     if (IS_NATIVE) {
       $("#updateCard").classList.remove("hidden");
@@ -280,6 +290,16 @@ function bindStaticHandlers() {
       removeOwnLocation();
       toast("위치 공유를 껐습니다.");
     }
+  });
+
+  $("#historyToggle").addEventListener("change", (e) => {
+    profile.locationHistoryEnabled = e.target.checked;
+    saveProfile(profile);
+    toast(
+      profile.locationHistoryEnabled
+        ? "위치 기록을 시작합니다. 10분마다 기록되어 다른 참여자가 볼 수 있습니다."
+        : "위치 기록을 껐습니다."
+    );
   });
 
   $("#btnSettingsSave").addEventListener("click", async () => {
@@ -334,6 +354,21 @@ function bindStaticHandlers() {
     selectedMemberId = null;
     selectedMemberCheckStartUpdatedAt = null;
     $("#selectedAddressBox").classList.add("hidden");
+  });
+
+  $("#btnViewLocationHistory").addEventListener("click", () => {
+    if (!selectedMemberId) return;
+    const m = lastMembersData[selectedMemberId];
+    openLocationHistory(selectedMemberId, (m && m.name) || "친구", selectedMemberId === profile.memberId);
+  });
+  $("#btnLocationHistoryBack").addEventListener("click", goBackScreen);
+  $("#btnLocationHistoryClear").addEventListener("click", async () => {
+    if (!selectedMemberId || selectedMemberId !== profile.memberId) return;
+    const ok = await confirmDialog("내 위치 기록을 모두 삭제할까요?");
+    if (!ok) return;
+    db.ref(`groups/${profile.groupCode}/members/${profile.memberId}/history`).remove();
+    $("#locationHistoryList").innerHTML = `<p class="hint-text">아직 기록이 없습니다.</p>`;
+    toast("위치 기록을 삭제했습니다.");
   });
 
   document.addEventListener("visibilitychange", () => {
@@ -483,6 +518,7 @@ function selectMember(memberId, m) {
   const isStale = !m.updatedAt || Date.now() - m.updatedAt > STALE_MS;
   $("#selectedAddressBox").classList.remove("hidden");
   $("#selectedAddressTitle").textContent = m.name + "님 위치";
+  $("#btnViewLocationHistory").classList.toggle("hidden", !m.historyEnabled);
   if (hasLocation) {
     focusMember(m.lat, m.lng);
     if (isStale) {
@@ -823,6 +859,7 @@ function renderMembers(data) {
       $("#selectedAddressVersion").textContent = m.versionName
         ? `앱 버전: ${m.versionName}`
         : "앱 버전: 확인 불가 (오래된 버전)";
+      $("#btnViewLocationHistory").classList.toggle("hidden", !m.historyEnabled);
     }
     listEl.appendChild(row);
   });
@@ -1087,6 +1124,78 @@ function renderConnectionLog() {
     .join("");
 }
 
+// ---------- 지난 위치 기록 (설정에서 "내 위치 기록하기"를 켠 사람만 남기고, 그룹 누구나 볼 수 있음) ----------
+
+async function openLocationHistory(memberId, name, isSelf) {
+  $("#locationHistoryTitle").textContent = name + "님 위치 기록";
+  $("#btnLocationHistoryClear").classList.toggle("hidden", !isSelf);
+  $("#locationHistoryList").innerHTML = `<p class="hint-text">불러오는 중...</p>`;
+  pushScreen("screen-location-history");
+  await loadAndRenderLocationHistory(memberId);
+}
+
+async function loadAndRenderLocationHistory(memberId) {
+  if (!profile || !firebaseConfig.databaseURL) return;
+  try {
+    const url = `${firebaseConfig.databaseURL}/groups/${encodeURIComponent(profile.groupCode)}/members/${encodeURIComponent(memberId)}/history.json?t=${Date.now()}`;
+    const res = await fetch(url);
+    const data = await res.json();
+    renderLocationHistoryList(data || {});
+  } catch (e) {
+    console.warn("loadAndRenderLocationHistory failed", e);
+    $("#locationHistoryList").innerHTML = `<p class="hint-text">기록을 불러오지 못했습니다.</p>`;
+  }
+}
+
+function renderLocationHistoryList(data) {
+  const listEl = $("#locationHistoryList");
+  const entries = Object.values(data)
+    .filter((e) => typeof e.lat === "number" && typeof e.lng === "number")
+    .sort((a, b) => (b.ts || 0) - (a.ts || 0))
+    .slice(0, LOCATION_HISTORY_MAX_ENTRIES);
+  if (!entries.length) {
+    listEl.innerHTML = `<p class="hint-text">아직 기록이 없습니다.</p>`;
+    return;
+  }
+  listEl.innerHTML = entries
+    .map(
+      (e) => `
+        <div class="log-row">
+          <div class="log-row-top">
+            <span class="log-time">${formatLogTime(e.ts)}</span>
+          </div>
+          <div class="log-address">주소를 불러오는 중...</div>
+        </div>
+      `
+    )
+    .join("");
+  fillLocationHistoryAddresses(entries);
+}
+
+// 같은 화면에서 여러 명분 주소를 한꺼번에 요청하지 않도록 순차로 채운다 (무료 역지오코딩 서비스 과다 호출 방지).
+async function fillLocationHistoryAddresses(entries) {
+  const rows = $("#locationHistoryList").querySelectorAll(".log-address");
+  for (let i = 0; i < entries.length; i++) {
+    const address = await reverseGeocodeCached(entries[i].lat, entries[i].lng);
+    if (rows[i]) rows[i].textContent = "📍 " + (address || "주소를 찾을 수 없습니다.");
+  }
+}
+
+// writeLocation()이 실시간 위치를 쓸 때마다 같이 호출된다. 프로필에서 기록을 켠 경우에만,
+// 10분에 한 번씩만 별도의 history 노드에 좌표를 남긴다(실시간 위치와 달리 매번 덮어쓰지 않고 쌓임).
+function maybeWriteLocationHistory(lat, lng, accuracy) {
+  if (!profile || !profile.locationHistoryEnabled || !firebaseConfig.databaseURL) return;
+  const lastWrite = Number(localStorage.getItem(LOCATION_HISTORY_LAST_WRITE_KEY)) || 0;
+  if (Date.now() - lastWrite < LOCATION_HISTORY_INTERVAL_MS) return;
+  localStorage.setItem(LOCATION_HISTORY_LAST_WRITE_KEY, String(Date.now()));
+  const url = `${firebaseConfig.databaseURL}/groups/${encodeURIComponent(profile.groupCode)}/members/${encodeURIComponent(profile.memberId)}/history.json`;
+  fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ lat, lng, accuracy, ts: { ".sv": "timestamp" } }),
+  }).catch((e) => console.warn("writeLocationHistory failed", e));
+}
+
 // Realtime Database REST API로 직접 PUT한다 (Firebase JS SDK의 웹소켓 대신).
 // 안드로이드 WebView는 화면이 꺼지거나 앱이 백그라운드로 간 지 몇 분이 지나면
 // 자체적으로 네트워크 요청을 지연시키는데, capacitor.config.json에서 켠
@@ -1094,6 +1203,7 @@ function renderConnectionLog() {
 // 안정적으로 위치가 기록된다 (SDK의 웹소켓 연결은 이 우회의 혜택을 받지 못한다).
 function writeLocation(lat, lng, accuracy) {
   const url = `${firebaseConfig.databaseURL}/groups/${encodeURIComponent(profile.groupCode)}/members/${encodeURIComponent(profile.memberId)}.json`;
+  maybeWriteLocationHistory(lat, lng, accuracy);
   return fetch(url, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
@@ -1103,6 +1213,7 @@ function writeLocation(lat, lng, accuracy) {
       lng,
       accuracy,
       versionName: APP_VERSION_NAME,
+      historyEnabled: !!profile.locationHistoryEnabled,
       updatedAt: { ".sv": "timestamp" },
     }),
   }).catch((err) => console.warn("writeLocation failed", err));
