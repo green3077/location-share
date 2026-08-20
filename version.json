@@ -1,6 +1,6 @@
 {
-  "versionCode": 15,
-  "versionName": "1.14",
+  "versionCode": 16,
+  "versionName": "1.15",
   "apkUrl": "https://green3077.github.io/location-share/location-share.apk",
-  "notes": "설정에서 \"내 위치 기록하기\"를 켜면 10분마다 위치가 기록되어, 다른 참여자가 내 이름을 눌러 지난 위치 기록을 볼 수 있는 기능 추가"
+  "notes": "친구 이름을 눌렀을 때 앱 버전 표시 삭제, 위치 기록 기능을 20분 간격 자동 기록으로 전환 (설정 켤 필요 없이 참여자 전원 항상 기록, 움직임이 없어도 시간마다 계속 기록됨)"
 }

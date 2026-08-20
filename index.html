@@ -78,7 +78,6 @@
     </div>
     <div id="connectionCheckStatus" class="connection-check hidden"></div>
     <div id="selectedAddressText" class="hint-text"></div>
-    <div id="selectedAddressVersion" class="hint-text"></div>
     <button id="btnViewLocationHistory" class="btn-secondary hidden" style="width:100%;margin-top:8px">지난 위치 기록 보기</button>
   </div>
 
@@ -102,11 +101,7 @@
       <input type="checkbox" id="sharingToggle">
     </label>
     <p class="hint-text">끄면 다른 참여자에게 내 위치가 더 이상 보이지 않습니다.</p>
-    <label class="toggle-row">
-      <span>내 위치 기록하기</span>
-      <input type="checkbox" id="historyToggle">
-    </label>
-    <p class="hint-text">켜두면 10분마다 내 위치가 기록되고, 다른 참여자가 내 이름을 눌러 "지난 위치 기록"으로 볼 수 있습니다.</p>
+    <p class="hint-text">내 위치는 20분마다 자동으로 기록되어, 다른 참여자가 내 이름을 눌러 "지난 위치 기록"으로 볼 수 있습니다.</p>
   </div>
   <div class="card">
     <div class="panel-title">지도</div>
@@ -165,7 +160,7 @@
     <button id="btnLocationHistoryClear" class="header-btn hidden">삭제</button>
   </div>
   <div class="card">
-    <p class="hint-text">설정에서 "내 위치 기록하기"를 켠 동안 10분 간격으로 기록된 위치입니다.</p>
+    <p class="hint-text">20분 간격으로 자동 기록된 위치입니다 (움직임이 없어도 시간마다 계속 기록됩니다).</p>
   </div>
   <div id="locationHistoryPanel" class="card">
     <div id="locationHistoryList"></div>
