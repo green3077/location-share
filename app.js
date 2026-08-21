@@ -1,5 +1,5 @@
-const APP_VERSION_CODE = 16; // android/app/build.gradle의 versionCode와 항상 같이 올릴 것
-const APP_VERSION_NAME = "1.15";
+const APP_VERSION_CODE = 17; // android/app/build.gradle의 versionCode와 항상 같이 올릴 것
+const APP_VERSION_NAME = "1.16";
 const UPDATE_MANIFEST_URL = "https://green3077.github.io/location-share/version.json";
 
 const GATE_KEY = "ls_gate_v1";
@@ -36,6 +36,7 @@ const LocalNotifications = IS_NATIVE ? window.Capacitor.registerPlugin("LocalNot
 const NativeProfileBridge = IS_NATIVE ? window.Capacitor.registerPlugin("NativeProfileBridge") : null;
 const UpdateBridge = IS_NATIVE ? window.Capacitor.registerPlugin("UpdateBridge") : null;
 const BatteryOptimizationBridge = IS_NATIVE ? window.Capacitor.registerPlugin("BatteryOptimizationBridge") : null;
+const AutoStartBridge = IS_NATIVE ? window.Capacitor.registerPlugin("AutoStartBridge") : null;
 const BATTERY_OPT_ASKED_KEY = "ls_battery_opt_asked_v1";
 
 const MAP_PROVIDER_KEY = "ls_map_provider_v1";
@@ -253,6 +254,7 @@ function bindStaticHandlers() {
       $("#updateCard").classList.remove("hidden");
       $("#appVersionText").textContent = "현재 버전: " + APP_VERSION_NAME;
       refreshBatteryCard();
+      $("#autoStartCard").classList.remove("hidden");
     }
     pushScreen("screen-settings");
   });
@@ -264,6 +266,13 @@ function bindStaticHandlers() {
       await BatteryOptimizationBridge.requestExemption();
     } catch (e) {
       console.warn("requestExemption failed", e);
+    }
+  });
+  $("#btnAutoStartSettings").addEventListener("click", async () => {
+    try {
+      await AutoStartBridge.openAutoStartSettings();
+    } catch (e) {
+      console.warn("openAutoStartSettings failed", e);
     }
   });
 
