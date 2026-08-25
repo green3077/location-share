@@ -18,10 +18,10 @@
           <div class="brand-logo">하이<br>오더</div>
         </div>
 
-        <div class="table-badge">
+        <button class="table-badge" id="btnTableBadge" type="button">
           <div class="table-badge-label" data-i18n="table.label">TABLE</div>
-          <div class="table-badge-num" id="tableNumber">8</div>
-        </div>
+          <div class="table-badge-num" id="tableNumber">-</div>
+        </button>
 
         <nav class="side-nav">
           <button class="side-nav-btn active" type="button">
@@ -91,6 +91,17 @@
   </div>
 </div>
 
+<!-- 테이블 번호 선택 모달 -->
+<div class="modal-overlay hidden" id="tableModalOverlay">
+  <div class="modal small-modal">
+    <div class="modal-header">
+      <h2 data-i18n="table.pick.title">테이블 번호를 선택해주세요</h2>
+      <button class="modal-close hidden" id="btnCloseTableModal" type="button" aria-label="close">✕</button>
+    </div>
+    <div class="table-picker-grid" id="tablePickerGrid"></div>
+  </div>
+</div>
+
 <!-- 쿠폰 모달 -->
 <div class="modal-overlay hidden" id="couponModalOverlay">
   <div class="modal small-modal">
@@ -104,6 +115,9 @@
 
 <div class="toast-container" id="toastContainer"></div>
 
+<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-database-compat.js"></script>
+<script src="firebase-config.js"></script>
 <script src="menu-data.js"></script>
 <script src="app.js"></script>
 </body>

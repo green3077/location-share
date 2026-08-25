@@ -105,7 +105,12 @@ button {
 .table-badge {
   margin-top: 18px;
   text-align: center;
+  width: 100%;
+  padding: 6px 0;
+  border-radius: 10px;
 }
+
+.table-badge:active { background: var(--sidebar-bg-2); }
 
 .table-badge-label {
   font-size: 10px;
@@ -561,6 +566,33 @@ button {
   text-align: center;
   color: #6b7688;
   font-size: 14px;
+}
+
+.table-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 10px;
+  padding: 20px;
+}
+
+.table-picker-btn {
+  aspect-ratio: 1 / 1;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--bg-soft);
+  font-size: 18px;
+  font-weight: 800;
+  color: var(--page-text);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.table-picker-btn:active,
+.table-picker-btn.active {
+  background: var(--teal);
+  border-color: var(--teal);
+  color: #fff;
 }
 
 /* ---------- Toast ---------- */

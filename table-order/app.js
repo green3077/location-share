@@ -4,6 +4,7 @@
   var UI_STRINGS = {
     ko: {
       "table.label": "테이블",
+      "table.pick.title": "테이블 번호를 선택해주세요",
       "nav.order": "메뉴주문",
       "staff.call": "직원<br>호출",
       "coupon": "쿠폰",
@@ -18,11 +19,13 @@
       "toast.added": "담았습니다.",
       "toast.staffCalled": "직원을 호출했습니다.",
       "toast.orderPlaced": "주문이 접수되었습니다!",
+      "toast.orderFailed": "주문 접수에 실패했습니다. 다시 시도해주세요.",
       "badge.popular": "인기",
       "badge.new": "신메뉴",
     },
     en: {
       "table.label": "TABLE",
+      "table.pick.title": "Please select your table number",
       "nav.order": "Order",
       "staff.call": "Call<br>Staff",
       "coupon": "Coupon",
@@ -37,15 +40,38 @@
       "toast.added": "Added to cart.",
       "toast.staffCalled": "Staff has been called.",
       "toast.orderPlaced": "Your order has been placed!",
+      "toast.orderFailed": "Failed to place order. Please try again.",
       "badge.popular": "Popular",
       "badge.new": "New",
     },
   };
 
+  var CONFIG = {
+    tableCount: 12,
+  };
+
+  var db = null;
+  try {
+    firebase.initializeApp(firebaseConfig);
+    db = firebase.database();
+  } catch (e) {
+    console.error("Firebase init failed", e);
+  }
+
+  function resolveInitialTableNumber() {
+    var params = new URLSearchParams(window.location.search);
+    var fromUrl = parseInt(params.get("table"), 10);
+    if (fromUrl >= 1 && fromUrl <= CONFIG.tableCount) return fromUrl;
+    var stored = parseInt(localStorage.getItem("tableOrderTableNumber"), 10);
+    if (stored >= 1 && stored <= CONFIG.tableCount) return stored;
+    return null;
+  }
+
   var state = {
     lang: "ko",
     categoryId: MENU_DATA.categories[0].id,
     cart: {}, // itemId -> qty
+    tableNumber: resolveInitialTableNumber(),
   };
 
   var els = {
@@ -69,6 +95,11 @@
     couponModalOverlay: document.getElementById("couponModalOverlay"),
     btnCloseCoupon: document.getElementById("btnCloseCoupon"),
     toastContainer: document.getElementById("toastContainer"),
+    btnTableBadge: document.getElementById("btnTableBadge"),
+    tableNumberDisplay: document.getElementById("tableNumber"),
+    tableModalOverlay: document.getElementById("tableModalOverlay"),
+    tablePickerGrid: document.getElementById("tablePickerGrid"),
+    btnCloseTableModal: document.getElementById("btnCloseTableModal"),
   };
 
   function t(key) {
@@ -313,6 +344,37 @@
     els.cartTotalAmount.textContent = formatPrice(cartTotal());
   }
 
+  function renderTablePicker() {
+    els.tablePickerGrid.innerHTML = "";
+    for (var n = 1; n <= CONFIG.tableCount; n++) {
+      var btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "table-picker-btn" + (state.tableNumber === n ? " active" : "");
+      btn.textContent = n;
+      btn.addEventListener("click", function () {
+        setTableNumber(parseInt(this.textContent, 10));
+        closeTableModal();
+      });
+      els.tablePickerGrid.appendChild(btn);
+    }
+  }
+
+  function setTableNumber(n) {
+    state.tableNumber = n;
+    localStorage.setItem("tableOrderTableNumber", String(n));
+    els.tableNumberDisplay.textContent = n;
+  }
+
+  function openTableModal(forced) {
+    renderTablePicker();
+    els.btnCloseTableModal.classList.toggle("hidden", !!forced);
+    els.tableModalOverlay.classList.remove("hidden");
+  }
+
+  function closeTableModal() {
+    els.tableModalOverlay.classList.add("hidden");
+  }
+
   function applyStaticI18n() {
     document.querySelectorAll("[data-i18n]").forEach(function (el) {
       el.textContent = t(el.getAttribute("data-i18n"));
@@ -328,6 +390,7 @@
     renderCategoryTabs();
     renderMenuGrid();
     updateOrderBadge();
+    els.tableNumberDisplay.textContent = state.tableNumber || "-";
   }
 
   // ---------- Cart mutations ----------
@@ -358,7 +421,21 @@
 
   els.btnCallStaff.addEventListener("click", function () {
     showToast(t("toast.staffCalled"));
+    if (db && state.tableNumber) {
+      db.ref("tableOrders/staffCalls").push({
+        tableNumber: state.tableNumber,
+        status: "pending",
+        createdAt: firebase.database.ServerValue.TIMESTAMP,
+      }).catch(function (err) {
+        console.error("Staff call failed", err);
+      });
+    }
   });
+
+  els.btnTableBadge.addEventListener("click", function () {
+    openTableModal(false);
+  });
+  els.btnCloseTableModal.addEventListener("click", closeTableModal);
 
   els.btnCoupon.addEventListener("click", function () {
     els.couponModalOverlay.classList.remove("hidden");
@@ -387,12 +464,45 @@
 
   els.btnConfirmOrder.addEventListener("click", function () {
     if (cartCount() === 0) return;
-    showToast(t("toast.orderPlaced"));
-    state.cart = {};
-    closeCartModal();
-    renderMenuGrid();
-    updateOrderBadge();
+    if (!state.tableNumber) {
+      closeCartModal();
+      openTableModal(true);
+      return;
+    }
+    if (!db) {
+      showToast(t("toast.orderFailed"));
+      return;
+    }
+
+    var ids = Object.keys(state.cart).filter(function (id) { return state.cart[id] > 0; });
+    var items = ids.map(function (id) {
+      var item = findItem(id);
+      return { id: id, name: item.name.ko, qty: state.cart[id], price: item.price };
+    });
+    var order = {
+      tableNumber: state.tableNumber,
+      items: items,
+      totalAmount: cartTotal(),
+      status: "pending",
+      createdAt: firebase.database.ServerValue.TIMESTAMP,
+    };
+
+    els.btnConfirmOrder.setAttribute("disabled", "disabled");
+    db.ref("tableOrders/orders").push(order)
+      .then(function () {
+        showToast(t("toast.orderPlaced"));
+        state.cart = {};
+        closeCartModal();
+        renderMenuGrid();
+        updateOrderBadge();
+      })
+      .catch(function (err) {
+        console.error("Order submit failed", err);
+        showToast(t("toast.orderFailed"));
+        els.btnConfirmOrder.removeAttribute("disabled");
+      });
   });
 
   renderAll();
+  if (!state.tableNumber) openTableModal(true);
 })();
