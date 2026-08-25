@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="primary">#3D5AFE</color>
+    <color name="primary_dark">#0031CA</color>
+    <color name="background">#FFFFFF</color>
+    <color name="text_secondary">#757575</color>
+    <color name="thumbnail_placeholder">#E0E0E0</color>
+    <color name="selection_overlay">#803D5AFE</color>
+    <color name="viewer_background">#000000</color>
+    <color name="viewer_toolbar_background">#CC000000</color>
+    <color name="white">#FFFFFF</color>
+</resources>

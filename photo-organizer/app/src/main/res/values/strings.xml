@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">추억정리</string>
+    <string name="title_detail">날짜별 사진</string>
+    <string name="pick_date">날짜 선택</string>
+    <string name="delete">삭제</string>
+    <string name="allow_access">사진 접근 허용하기</string>
+    <string name="permission_rationale">매년 같은 날 찍은 사진을 모아 보려면\n사진 접근 권한이 필요해요.</string>
+    <string name="empty_recurring_title">아직 2개 이상의 연도에 걸쳐\n찍힌 날짜가 없어요.</string>
+    <string name="empty_recurring_subtitle">오른쪽 위 달력 아이콘으로 날짜를 직접 선택해 볼 수 있어요.</string>
+    <string name="empty_detail">이 날짜에 찍은 사진이 없어요.</string>
+    <string name="selected_count">%1$d장 선택됨</string>
+    <string name="notification_channel_name">추억정리 챌린지 알림</string>
+    <string name="notification_title">오늘의 정리 챌린지 🎯</string>
+    <string name="notification_body">%1$d개 연도, 총 %2$d장의 추억이 있어요. 지금 정리해보세요!</string>
+    <string name="streak_banner">🔥 %1$d일 연속 정리 챌린지 중!</string>
+</resources>
