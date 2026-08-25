@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>테이블 주문</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div class="device-wrap">
+  <div class="kiosk-frame">
+    <div class="kiosk">
+
+      <!-- 좌측 사이드바 -->
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-logo">하이<br>오더</div>
+        </div>
+
+        <div class="table-badge">
+          <div class="table-badge-label" data-i18n="table.label">TABLE</div>
+          <div class="table-badge-num" id="tableNumber">8</div>
+        </div>
+
+        <nav class="side-nav">
+          <button class="side-nav-btn active" type="button">
+            <span class="side-nav-icon">🍽️</span>
+            <span data-i18n="nav.order">메뉴주문</span>
+          </button>
+        </nav>
+
+        <div class="sidebar-spacer"></div>
+
+        <button class="lang-btn" id="btnLang" type="button">
+          <span class="lang-icon">🌐</span>
+          <span id="langLabel">LANG</span>
+        </button>
+
+        <button class="staff-call-btn" id="btnCallStaff" type="button">
+          <span data-i18n-html="staff.call">직원<br>호출</span>
+        </button>
+      </aside>
+
+      <!-- 우측 메뉴 영역 -->
+      <main class="content">
+        <div class="category-bar">
+          <button class="cat-scroll-btn" id="catPrev" type="button" aria-label="prev">‹</button>
+          <div class="category-tabs" id="categoryTabs"></div>
+          <button class="cat-scroll-btn" id="catNext" type="button" aria-label="next">›</button>
+        </div>
+
+        <div class="menu-grid" id="menuGrid"></div>
+
+        <div class="bottom-bar">
+          <button class="bottom-btn coupon-btn" id="btnCoupon" type="button">
+            <span class="bottom-btn-icon">🎁</span>
+            <span data-i18n="coupon">쿠폰</span>
+          </button>
+          <button class="bottom-btn history-btn" id="btnOrderHistory" type="button">
+            <span class="bottom-btn-icon">📋</span>
+            <span data-i18n="orderHistory">주문내역</span>
+          </button>
+          <button class="bottom-btn order-btn" id="btnPlaceOrder" type="button">
+            <span data-i18n="placeOrder">주문하기</span>
+            <span class="order-count-badge" id="orderCountBadge">0</span>
+          </button>
+        </div>
+      </main>
+
+    </div>
+  </div>
+</div>
+
+<!-- 장바구니 / 주문내역 모달 -->
+<div class="modal-overlay hidden" id="cartModalOverlay">
+  <div class="modal cart-modal">
+    <div class="modal-header">
+      <h2 data-i18n="orderHistory">주문내역</h2>
+      <button class="modal-close" id="btnCloseCart" type="button" aria-label="close">✕</button>
+    </div>
+    <div class="cart-list" id="cartList"></div>
+    <div class="cart-empty hidden" id="cartEmpty" data-i18n="cart.empty">담긴 메뉴가 없습니다.</div>
+    <div class="cart-summary">
+      <div class="cart-total-row">
+        <span data-i18n="cart.total">총 결제금액</span>
+        <span class="cart-total-amount" id="cartTotalAmount">0원</span>
+      </div>
+      <button class="btn-confirm-order" id="btnConfirmOrder" type="button" data-i18n="cart.confirm">주문하기</button>
+    </div>
+  </div>
+</div>
+
+<!-- 쿠폰 모달 -->
+<div class="modal-overlay hidden" id="couponModalOverlay">
+  <div class="modal small-modal">
+    <div class="modal-header">
+      <h2 data-i18n="coupon">쿠폰</h2>
+      <button class="modal-close" id="btnCloseCoupon" type="button" aria-label="close">✕</button>
+    </div>
+    <p class="modal-msg" data-i18n="coupon.empty">사용 가능한 쿠폰이 없습니다.</p>
+  </div>
+</div>
+
+<div class="toast-container" id="toastContainer"></div>
+
+<script src="menu-data.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
