@@ -27,6 +27,7 @@
   var db = null;
   var ordersData = {};
   var staffCallsData = {};
+  var seenPendingCallIds = null;
   var currentFilter = "all";
   var listenersAttached = false;
 
@@ -47,7 +48,47 @@
     var d = new Date(ts);
     var hh = String(d.getHours()).padStart(2, "0");
     var mm = String(d.getMinutes()).padStart(2, "0");
-    return hh + ":" + mm;
+    var ss = String(d.getSeconds()).padStart(2, "0");
+    return hh + ":" + mm + ":" + ss;
+  }
+
+  // ---------- Staff-call alert (vibration + beep) ----------
+
+  var audioCtx = null;
+
+  function ensureAudioCtx() {
+    var AudioCtxClass = window.AudioContext || window.webkitAudioContext;
+    if (!AudioCtxClass) return null;
+    if (!audioCtx) audioCtx = new AudioCtxClass();
+    if (audioCtx.state === "suspended") audioCtx.resume();
+    return audioCtx;
+  }
+
+  function playBeep() {
+    var ctx = ensureAudioCtx();
+    if (!ctx) return;
+    [0, 0.28, 0.56].forEach(function (delay) {
+      var osc = ctx.createOscillator();
+      var gain = ctx.createGain();
+      osc.type = "sine";
+      osc.frequency.value = 880;
+      gain.gain.setValueAtTime(0.0001, ctx.currentTime + delay);
+      gain.gain.exponentialRampToValueAtTime(0.35, ctx.currentTime + delay + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + delay + 0.22);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(ctx.currentTime + delay);
+      osc.stop(ctx.currentTime + delay + 0.24);
+    });
+  }
+
+  function alertStaffCall() {
+    try {
+      if (navigator.vibrate) navigator.vibrate([300, 150, 300, 150, 300]);
+    } catch (e) { /* ignore */ }
+    try {
+      playBeep();
+    } catch (e) { /* ignore */ }
   }
 
   function isToday(ts) {
@@ -70,7 +111,10 @@
     }
   }
 
-  els.btnAdminLogin.addEventListener("click", tryLogin);
+  els.btnAdminLogin.addEventListener("click", function () {
+    ensureAudioCtx();
+    tryLogin();
+  });
   els.adminPin.addEventListener("keydown", function (e) {
     if (e.key === "Enter") tryLogin();
   });
@@ -85,6 +129,8 @@
     els.screenDashboard.classList.remove("hidden");
     renderAll();
     initFirebase();
+    // 자동 로그인(비밀번호 입력 없이 재방문)일 때도 첫 터치에서 알림음을 재생할 수 있도록 잠금 해제
+    document.addEventListener("click", ensureAudioCtx, { once: true });
   }
 
   // ---------- Firebase ----------
@@ -108,6 +154,19 @@
 
     db.ref("tableOrders/staffCalls").on("value", function (snap) {
       staffCallsData = snap.val() || {};
+      var pendingIds = Object.keys(staffCallsData).filter(function (id) {
+        return staffCallsData[id].status === "pending";
+      });
+
+      if (seenPendingCallIds === null) {
+        // 첫 로딩 시 이미 있던 호출은 알림을 울리지 않습니다.
+        seenPendingCallIds = pendingIds;
+      } else {
+        var isNew = pendingIds.some(function (id) { return seenPendingCallIds.indexOf(id) === -1; });
+        if (isNew) alertStaffCall();
+        seenPendingCallIds = pendingIds;
+      }
+
       renderStaffCallBanner();
     });
   }
@@ -233,19 +292,70 @@
     });
   }
 
+  // 같은 테이블의 미완료(결제 전) 주문들은 하나의 카드로 합쳐서 보여주고,
+  // 완료된 주문은 결제 처리된 시점 기준으로 각각의 카드로 보여줍니다.
+  function buildOrderCards(orders) {
+    var pendingByTable = {};
+    var cards = [];
+
+    orders.forEach(function (o) {
+      if (o.status !== "pending") return;
+      var key = o.tableNumber;
+      if (!pendingByTable[key]) {
+        pendingByTable[key] = {
+          tableNumber: o.tableNumber,
+          status: "pending",
+          orderIds: [],
+          items: [],
+          total: 0,
+          sortTime: 0,
+        };
+      }
+      var group = pendingByTable[key];
+      group.orderIds.push(o.id);
+      group.total += o.totalAmount || 0;
+      group.sortTime = Math.max(group.sortTime, o.createdAt || 0);
+      (o.items || []).forEach(function (it) {
+        group.items.push({ name: it.name, qty: it.qty, price: it.price, createdAt: o.createdAt });
+      });
+    });
+
+    Object.keys(pendingByTable).forEach(function (key) {
+      var group = pendingByTable[key];
+      group.items.sort(function (a, b) { return (a.createdAt || 0) - (b.createdAt || 0); });
+      cards.push(group);
+    });
+
+    orders.forEach(function (o) {
+      if (o.status !== "done") return;
+      cards.push({
+        tableNumber: o.tableNumber,
+        status: "done",
+        orderIds: [o.id],
+        items: (o.items || []).map(function (it) {
+          return { name: it.name, qty: it.qty, price: it.price, createdAt: o.createdAt };
+        }),
+        total: o.totalAmount || 0,
+        sortTime: o.doneAt || o.createdAt || 0,
+      });
+    });
+
+    return cards.sort(function (a, b) { return b.sortTime - a.sortTime; });
+  }
+
   function renderOrderList(orders) {
-    var filtered = orders.filter(function (o) {
-      if (currentFilter === "pending") return o.status === "pending";
-      if (currentFilter === "done") return o.status === "done";
+    var cards = buildOrderCards(orders).filter(function (c) {
+      if (currentFilter === "pending") return c.status === "pending";
+      if (currentFilter === "done") return c.status === "done";
       return true;
-    }).sort(function (a, b) { return (b.createdAt || 0) - (a.createdAt || 0); });
+    });
 
     els.orderList.innerHTML = "";
-    els.orderListEmpty.classList.toggle("hidden", filtered.length > 0);
+    els.orderListEmpty.classList.toggle("hidden", cards.length > 0);
 
-    filtered.forEach(function (o) {
+    cards.forEach(function (c) {
       var card = document.createElement("div");
-      card.className = "order-card" + (o.status === "done" ? " done" : "");
+      card.className = "order-card" + (c.status === "done" ? " done" : "");
 
       var top = document.createElement("div");
       top.className = "order-card-top";
@@ -257,26 +367,27 @@
 
       var tableEl = document.createElement("div");
       tableEl.className = "order-card-table";
-      tableEl.textContent = "테이블 " + o.tableNumber;
+      tableEl.textContent = "테이블 " + c.tableNumber;
 
       var timeEl = document.createElement("div");
       timeEl.className = "order-card-time";
-      timeEl.textContent = formatTime(o.createdAt);
+      timeEl.textContent = "최초 주문 " + formatTime(c.items[0] && c.items[0].createdAt);
 
       topLeft.appendChild(tableEl);
       topLeft.appendChild(timeEl);
 
       var statusEl = document.createElement("div");
-      statusEl.className = "order-status-badge" + (o.status === "done" ? " done" : "");
-      statusEl.textContent = o.status === "done" ? "완료" : "미완료";
+      statusEl.className = "order-status-badge" + (c.status === "done" ? " done" : "");
+      statusEl.textContent = c.status === "done" ? "완료" : "미완료";
 
       top.appendChild(topLeft);
       top.appendChild(statusEl);
 
       var itemsEl = document.createElement("div");
       itemsEl.className = "order-card-items";
-      itemsEl.innerHTML = (o.items || []).map(function (it) {
-        return it.name + " x" + it.qty;
+      itemsEl.innerHTML = c.items.map(function (it) {
+        return it.name + " x" + it.qty +
+          ' <span class="order-card-item-time">' + formatTime(it.createdAt) + "</span>";
       }).join("<br>");
 
       var bottom = document.createElement("div");
@@ -284,18 +395,20 @@
 
       var totalEl = document.createElement("div");
       totalEl.className = "order-card-total";
-      totalEl.textContent = formatPrice(o.totalAmount);
+      totalEl.textContent = formatPrice(c.total);
 
       var actionBtn = document.createElement("button");
       actionBtn.type = "button";
-      actionBtn.className = "order-card-action" + (o.status === "done" ? " undo" : "");
-      actionBtn.textContent = o.status === "done" ? "미완료로 되돌리기" : "완료 처리";
+      actionBtn.className = "order-card-action" + (c.status === "done" ? " undo" : "");
+      actionBtn.textContent = c.status === "done" ? "미완료로 되돌리기" : "완료 처리";
       actionBtn.addEventListener("click", function () {
-        var newStatus = o.status === "done" ? "pending" : "done";
-        db.ref("tableOrders/orders/" + o.id).update({
-          status: newStatus,
-          doneAt: newStatus === "done" ? firebase.database.ServerValue.TIMESTAMP : null,
-        }).catch(function (err) { console.error(err); showToast("처리에 실패했습니다."); });
+        var newStatus = c.status === "done" ? "pending" : "done";
+        var updates = {};
+        c.orderIds.forEach(function (id) {
+          updates["tableOrders/orders/" + id + "/status"] = newStatus;
+          updates["tableOrders/orders/" + id + "/doneAt"] = newStatus === "done" ? firebase.database.ServerValue.TIMESTAMP : null;
+        });
+        db.ref().update(updates).catch(function (err) { console.error(err); showToast("처리에 실패했습니다."); });
       });
 
       bottom.appendChild(totalEl);
