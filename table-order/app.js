@@ -108,6 +108,12 @@
   // ---------- Rendering ----------
 
   function renderCategoryTabs() {
+    var categoryBar = els.categoryTabs.closest(".category-bar");
+    if (MENU_DATA.categories.length <= 1) {
+      categoryBar.classList.add("hidden");
+      return;
+    }
+    categoryBar.classList.remove("hidden");
     els.categoryTabs.innerHTML = "";
     MENU_DATA.categories.forEach(function (cat) {
       var btn = document.createElement("button");
@@ -134,7 +140,14 @@
 
       var image = document.createElement("div");
       image.className = "menu-card-image";
-      image.textContent = item.emoji;
+      if (item.image) {
+        var img = document.createElement("img");
+        img.src = item.image;
+        img.alt = item.name[state.lang];
+        image.appendChild(img);
+      } else {
+        image.textContent = item.emoji;
+      }
       if (item.badge) {
         var badge = document.createElement("span");
         badge.className = "menu-card-badge" + (item.badge === "new" ? " new" : "");
