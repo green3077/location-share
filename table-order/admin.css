@@ -276,6 +276,12 @@ button { font-family: inherit; cursor: pointer; }
   margin-bottom: 10px;
 }
 
+.order-card-item-time {
+  color: #b0b7c3;
+  font-size: 11.5px;
+  margin-left: 4px;
+}
+
 .order-card-bottom {
   display: flex;
   align-items: center;
