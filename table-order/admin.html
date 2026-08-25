@@ -42,6 +42,19 @@
 
   <div class="staff-call-banner hidden" id="staffCallBanner"></div>
 
+  <section class="table-merge-panel">
+    <div class="table-merge-header">
+      <h3>테이블 합치기</h3>
+      <button class="table-merge-toggle" id="btnToggleMergePanel" type="button">펼치기</button>
+    </div>
+    <p class="table-merge-hint">같은 일행이 여러 테이블에 앉았을 때 두 개 이상 선택해서 합치면, 결제도 한 번에 처리할 수 있어요.</p>
+    <div class="table-merge-body hidden" id="tableMergeBody">
+      <div class="table-merge-picker" id="tableMergePicker"></div>
+      <button class="table-merge-btn" id="btnMergeTables" type="button">선택한 테이블 합치기</button>
+      <div class="table-merge-groups" id="tableMergeGroups"></div>
+    </div>
+  </section>
+
   <section class="table-summary" id="tableSummary"></section>
 
   <div class="filter-tabs" id="filterTabs">

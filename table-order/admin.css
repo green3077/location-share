@@ -157,6 +157,115 @@ button { font-family: inherit; cursor: pointer; }
   justify-content: center;
 }
 
+.table-merge-panel {
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px 14px;
+  margin-bottom: 16px;
+}
+
+.table-merge-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.table-merge-header h3 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.table-merge-toggle {
+  border: 1px solid var(--border);
+  background: #fff;
+  color: #6b7688;
+  border-radius: 8px;
+  padding: 5px 12px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.table-merge-hint {
+  margin: 6px 0 0;
+  font-size: 12.5px;
+  color: #9aa2b1;
+}
+
+.table-merge-body {
+  margin-top: 12px;
+}
+
+.table-merge-picker {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(44px, 1fr));
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.table-merge-picker-btn {
+  aspect-ratio: 1 / 1;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--bg-soft);
+  font-size: 14px;
+  font-weight: 800;
+  color: var(--page-text);
+}
+
+.table-merge-picker-btn.selected {
+  background: var(--teal);
+  border-color: var(--teal);
+  color: #fff;
+}
+
+.table-merge-picker-btn.grouped {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.table-merge-btn {
+  width: 100%;
+  padding: 10px;
+  border: none;
+  border-radius: 8px;
+  background: #232a36;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+  margin-bottom: 10px;
+}
+
+.table-merge-btn:active { background: #000; }
+
+.table-merge-groups {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.table-merge-group-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 5px 8px 5px 12px;
+  font-size: 12.5px;
+  font-weight: 700;
+}
+
+.table-merge-group-chip button {
+  border: none;
+  background: #d8dde3;
+  color: #4a5364;
+  border-radius: 999px;
+  padding: 3px 9px;
+  font-size: 11.5px;
+  font-weight: 700;
+}
+
 .table-summary {
   display: flex;
   gap: 10px;

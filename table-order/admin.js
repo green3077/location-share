@@ -6,6 +6,9 @@
   var ADMIN_PIN = "0000";
   var AUTH_KEY = "tableOrderAdminAuthed";
 
+  // 손님용 앱(app.js)의 CONFIG.tableCount 와 맞춰주세요.
+  var CONFIG = { tableCount: 12 };
+
   var els = {
     screenLogin: document.getElementById("screenLogin"),
     adminPin: document.getElementById("adminPin"),
@@ -17,6 +20,11 @@
     statUnpaid: document.getElementById("statUnpaid"),
     statPendingCount: document.getElementById("statPendingCount"),
     staffCallBanner: document.getElementById("staffCallBanner"),
+    btnToggleMergePanel: document.getElementById("btnToggleMergePanel"),
+    tableMergeBody: document.getElementById("tableMergeBody"),
+    tableMergePicker: document.getElementById("tableMergePicker"),
+    btnMergeTables: document.getElementById("btnMergeTables"),
+    tableMergeGroups: document.getElementById("tableMergeGroups"),
     tableSummary: document.getElementById("tableSummary"),
     filterTabs: document.getElementById("filterTabs"),
     orderList: document.getElementById("orderList"),
@@ -27,6 +35,8 @@
   var db = null;
   var ordersData = {};
   var staffCallsData = {};
+  var tableGroupsData = {};
+  var selectedForMerge = [];
   var seenPendingCallIds = null;
   var currentFilter = "all";
   var listenersAttached = false;
@@ -152,6 +162,12 @@
       renderAll();
     });
 
+    db.ref("tableOrders/tableGroups").on("value", function (snap) {
+      tableGroupsData = snap.val() || {};
+      selectedForMerge = [];
+      renderAll();
+    });
+
     db.ref("tableOrders/staffCalls").on("value", function (snap) {
       staffCallsData = snap.val() || {};
       var pendingIds = Object.keys(staffCallsData).filter(function (id) {
@@ -235,20 +251,119 @@
     return { todaySales: todaySales, unpaid: unpaid, pendingCount: pendingCount };
   }
 
-  function renderTableSummary(orders) {
+  // ---------- Table merge (같은 일행의 여러 테이블 합치기) ----------
+
+  // tableGroupsData: { "1": { tables: [1, 2], createdAt } } → primary 테이블(가장 작은 번호)이 나머지를 흡수합니다.
+  function buildTableResolution() {
+    var memberToPrimary = {};
+    var primaryToMembers = {};
+    Object.keys(tableGroupsData).forEach(function (primaryKey) {
+      var primary = Number(primaryKey);
+      var tables = (tableGroupsData[primaryKey].tables || [primary]).slice().sort(function (a, b) { return a - b; });
+      primaryToMembers[primary] = tables;
+      tables.forEach(function (t) { memberToPrimary[t] = primary; });
+    });
+    return { memberToPrimary: memberToPrimary, primaryToMembers: primaryToMembers };
+  }
+
+  function effectiveTable(tableNumber, resolution) {
+    return resolution.memberToPrimary.hasOwnProperty(tableNumber) ? resolution.memberToPrimary[tableNumber] : tableNumber;
+  }
+
+  function tableLabel(tableKey, resolution) {
+    var members = resolution.primaryToMembers[tableKey];
+    if (members && members.length > 1) return "테이블 " + members.join("+");
+    return "테이블 " + tableKey;
+  }
+
+  function renderTableMergePicker(resolution) {
+    els.tableMergePicker.innerHTML = "";
+    for (var n = 1; n <= CONFIG.tableCount; n++) {
+      (function (n) {
+        var isGrouped = resolution.memberToPrimary.hasOwnProperty(n);
+        var btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "table-merge-picker-btn" +
+          (selectedForMerge.indexOf(n) !== -1 ? " selected" : "") +
+          (isGrouped ? " grouped" : "");
+        btn.textContent = n;
+        btn.title = isGrouped ? "이미 다른 테이블과 합쳐져 있어요. 먼저 해제해주세요." : "";
+        btn.addEventListener("click", function () {
+          if (isGrouped) return;
+          var idx = selectedForMerge.indexOf(n);
+          if (idx === -1) selectedForMerge.push(n);
+          else selectedForMerge.splice(idx, 1);
+          renderTableMergePicker(resolution);
+        });
+        els.tableMergePicker.appendChild(btn);
+      })(n);
+    }
+  }
+
+  function renderTableMergeGroups(resolution) {
+    els.tableMergeGroups.innerHTML = "";
+    var primaries = Object.keys(resolution.primaryToMembers).map(Number).sort(function (a, b) { return a - b; });
+
+    primaries.forEach(function (primary) {
+      var members = resolution.primaryToMembers[primary];
+      if (members.length <= 1) return;
+
+      var chip = document.createElement("span");
+      chip.className = "table-merge-group-chip";
+      chip.textContent = "테이블 " + members.join("+") + " ";
+
+      var undoBtn = document.createElement("button");
+      undoBtn.type = "button";
+      undoBtn.textContent = "해제";
+      undoBtn.addEventListener("click", function () {
+        db.ref("tableOrders/tableGroups/" + primary).remove()
+          .catch(function (err) { console.error(err); showToast("해제에 실패했습니다."); });
+      });
+
+      chip.appendChild(undoBtn);
+      els.tableMergeGroups.appendChild(chip);
+    });
+  }
+
+  els.btnToggleMergePanel.addEventListener("click", function () {
+    var willShow = els.tableMergeBody.classList.contains("hidden");
+    els.tableMergeBody.classList.toggle("hidden", !willShow);
+    els.btnToggleMergePanel.textContent = willShow ? "접기" : "펼치기";
+  });
+
+  els.btnMergeTables.addEventListener("click", function () {
+    if (selectedForMerge.length < 2) {
+      showToast("합칠 테이블을 2개 이상 선택해주세요.");
+      return;
+    }
+    var tables = selectedForMerge.slice().sort(function (a, b) { return a - b; });
+    var primary = tables[0];
+    db.ref("tableOrders/tableGroups/" + primary).set({
+      tables: tables,
+      createdAt: firebase.database.ServerValue.TIMESTAMP,
+    }).then(function () {
+      showToast("테이블 " + tables.join("+") + " 합쳤습니다.");
+      selectedForMerge = [];
+    }).catch(function (err) {
+      console.error(err);
+      showToast("합치기에 실패했습니다.");
+    });
+  });
+
+  function renderTableSummary(orders, resolution) {
     var byTable = {};
     orders.forEach(function (o) {
       if (o.status !== "pending") return;
-      var key = o.tableNumber;
+      var key = effectiveTable(o.tableNumber, resolution);
       byTable[key] = byTable[key] || { total: 0, ids: [] };
       byTable[key].total += o.totalAmount || 0;
       byTable[key].ids.push(o.id);
     });
 
-    var tableNumbers = Object.keys(byTable).map(Number).sort(function (a, b) { return a - b; });
+    var tableKeys = Object.keys(byTable).map(Number).sort(function (a, b) { return a - b; });
     els.tableSummary.innerHTML = "";
 
-    if (tableNumbers.length === 0) {
+    if (tableKeys.length === 0) {
       var empty = document.createElement("div");
       empty.className = "table-summary-empty";
       empty.textContent = "미결제 테이블이 없습니다.";
@@ -256,14 +371,15 @@
       return;
     }
 
-    tableNumbers.forEach(function (n) {
+    tableKeys.forEach(function (n) {
       var info = byTable[n];
+      var label = tableLabel(n, resolution);
       var card = document.createElement("div");
       card.className = "table-summary-card";
 
       var title = document.createElement("div");
       title.className = "table-summary-title";
-      title.textContent = "테이블 " + n;
+      title.textContent = label;
 
       var amount = document.createElement("div");
       amount.className = "table-summary-amount";
@@ -274,14 +390,14 @@
       payBtn.className = "table-summary-pay-btn";
       payBtn.textContent = "결제완료 처리";
       payBtn.addEventListener("click", function () {
-        if (!window.confirm("테이블 " + n + "의 주문 " + info.ids.length + "건을 결제완료 처리할까요?")) return;
+        if (!window.confirm(label + "의 주문 " + info.ids.length + "건을 결제완료 처리할까요?")) return;
         var updates = {};
         info.ids.forEach(function (id) {
           updates["tableOrders/orders/" + id + "/status"] = "done";
           updates["tableOrders/orders/" + id + "/doneAt"] = firebase.database.ServerValue.TIMESTAMP;
         });
         db.ref().update(updates)
-          .then(function () { showToast("테이블 " + n + " 결제완료 처리했습니다."); })
+          .then(function () { showToast(label + " 결제완료 처리했습니다."); })
           .catch(function (err) { console.error(err); showToast("처리에 실패했습니다."); });
       });
 
@@ -292,18 +408,19 @@
     });
   }
 
-  // 같은 테이블의 미완료(결제 전) 주문들은 하나의 카드로 합쳐서 보여주고,
+  // 같은 테이블(또는 합쳐진 테이블끼리)의 미완료(결제 전) 주문들은 하나의 카드로 합쳐서 보여주고,
   // 완료된 주문은 결제 처리된 시점 기준으로 각각의 카드로 보여줍니다.
-  function buildOrderCards(orders) {
+  function buildOrderCards(orders, resolution) {
     var pendingByTable = {};
     var cards = [];
 
     orders.forEach(function (o) {
       if (o.status !== "pending") return;
-      var key = o.tableNumber;
+      var key = effectiveTable(o.tableNumber, resolution);
       if (!pendingByTable[key]) {
         pendingByTable[key] = {
-          tableNumber: o.tableNumber,
+          tableKey: key,
+          label: tableLabel(key, resolution),
           status: "pending",
           orderIds: [],
           items: [],
@@ -329,7 +446,8 @@
     orders.forEach(function (o) {
       if (o.status !== "done") return;
       cards.push({
-        tableNumber: o.tableNumber,
+        tableKey: o.tableNumber,
+        label: "테이블 " + o.tableNumber,
         status: "done",
         orderIds: [o.id],
         items: (o.items || []).map(function (it) {
@@ -343,8 +461,8 @@
     return cards.sort(function (a, b) { return b.sortTime - a.sortTime; });
   }
 
-  function renderOrderList(orders) {
-    var cards = buildOrderCards(orders).filter(function (c) {
+  function renderOrderList(orders, resolution) {
+    var cards = buildOrderCards(orders, resolution).filter(function (c) {
       if (currentFilter === "pending") return c.status === "pending";
       if (currentFilter === "done") return c.status === "done";
       return true;
@@ -367,7 +485,7 @@
 
       var tableEl = document.createElement("div");
       tableEl.className = "order-card-table";
-      tableEl.textContent = "테이블 " + c.tableNumber;
+      tableEl.textContent = c.label;
 
       var timeEl = document.createElement("div");
       timeEl.className = "order-card-time";
@@ -423,12 +541,15 @@
 
   function renderAll() {
     var orders = ordersArray();
+    var resolution = buildTableResolution();
     var stats = computeStats(orders);
     els.statTodaySales.textContent = formatPrice(stats.todaySales);
     els.statUnpaid.textContent = formatPrice(stats.unpaid);
     els.statPendingCount.textContent = stats.pendingCount + "건";
-    renderTableSummary(orders);
-    renderOrderList(orders);
+    renderTableMergePicker(resolution);
+    renderTableMergeGroups(resolution);
+    renderTableSummary(orders, resolution);
+    renderOrderList(orders, resolution);
   }
 
   Array.prototype.slice.call(els.filterTabs.querySelectorAll(".filter-tab")).forEach(function (btn) {
@@ -438,7 +559,7 @@
         b.classList.remove("active");
       });
       btn.classList.add("active");
-      renderOrderList(ordersArray());
+      renderOrderList(ordersArray(), buildTableResolution());
     });
   });
 
