@@ -9,18 +9,6 @@
 </head>
 <body>
 
-<div id="js-debug-banner" style="position:fixed;top:0;left:0;right:0;z-index:999999;background:#c62828;color:#fff;font-size:12px;padding:6px;text-align:center;">
-  정적 HTML만 로드됨 (JS 대기중)
-</div>
-<button
-  id="js-debug-test-btn"
-  style="position:fixed;top:34px;left:0;right:0;z-index:999999;background:#1565c0;color:#fff;font-size:12px;padding:6px;border:none;"
-  onclick="alert('클릭 이벤트 정상 작동')"
->임시 테스트 버튼 (눌러보세요)</button>
-<script>
-  document.getElementById("js-debug-banner").textContent = "인라인 JS 실행됨 (외부 스크립트 대기중)";
-</script>
-
 <div id="toast-container"></div>
 <div id="confirm-overlay" class="hidden"></div>
 

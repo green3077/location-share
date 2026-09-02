@@ -1,10 +1,3 @@
-// 임시 디버그: app.js가 실제로 실행되는지 눈으로 바로 확인하기 위한 배너 업데이트.
-// 원인 확인되면 이 블록과 index.html의 #js-debug-banner/#js-debug-test-btn을 제거할 것.
-(function () {
-  const banner = document.getElementById("js-debug-banner");
-  if (banner) banner.textContent = "app.js 실행 시작됨";
-})();
-
 // 이 파일 어디선가 예외가 조용히 나면(특히 네이티브 전용 코드) 그 아래 코드가 전혀 실행되지
 // 않아 화면의 모든 버튼이 이유 없이 먹통이 된다("눌러도 반응 없음" - 실제로 있었던 문제).
 // 그런 침묵 실패를 눈에 보이는 토스트로 바꿔서 다음엔 바로 원인을 알 수 있게 한다.
@@ -214,8 +207,6 @@ function init() {
   // 끝나야 한다 - 순서가 바뀌어 있으면 firebase 쪽에서 던진 예외 하나 때문에 로그인
   // 화면을 포함한 모든 버튼이 조용히 죽어버린다(눌러도 아무 반응 없음 - 실제로 있었던 문제).
   bindStaticHandlers();
-  const banner = document.getElementById("js-debug-banner");
-  if (banner) banner.textContent = "bindStaticHandlers() 완료 (버튼 바인딩됨)";
 
   if (!firebaseConfig.apiKey) {
     resetScreenStack("screen-no-config");
