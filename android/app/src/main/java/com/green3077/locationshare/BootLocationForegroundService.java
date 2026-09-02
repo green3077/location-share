@@ -61,6 +61,16 @@ public class BootLocationForegroundService extends Service {
     @Override
     public void onCreate() {
         super.onCreate();
+        // API 34+에서는 foregroundServiceType="location"인 서비스가 startForeground()를 부르는
+        // 시점에 위치 권한이 하나도 없으면 SecurityException으로 죽는다. 이 서비스는 보통 권한이
+        // 확인된 뒤(NativeProfileBridgePlugin)에만 시작되지만, 재부팅/감시장치 경로는 그 확인을
+        // 거치지 않으므로(권한이 그 사이 취소됐을 수도 있음) 여기서 한 번 더 방어한다.
+        boolean hasFine = ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED;
+        boolean hasCoarse = ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED;
+        if (!hasFine && !hasCoarse) {
+            stopSelf();
+            return;
+        }
         isRunning = true;
         createNotificationChannel();
         startForeground(NOTIFICATION_ID, buildNotification());
@@ -73,6 +83,10 @@ public class BootLocationForegroundService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
+        if (workerHandler == null) {
+            // onCreate()에서 권한 부족 등으로 이미 stopSelf()한 경우 - 아무 것도 하지 않는다.
+            return START_NOT_STICKY;
+        }
         if (!ProfileStore.isSharingEnabled(getApplicationContext()) || !ProfileStore.hasValidProfile(getApplicationContext())) {
             stopSelf();
             return START_NOT_STICKY;
@@ -107,10 +121,9 @@ public class BootLocationForegroundService extends Service {
         // 이번 위치 획득이 실패/지연되어도 3분 주기 자체는 끊기지 않도록 다음 tick을 먼저 예약한다.
         workerHandler.postDelayed(tick, UPDATE_INTERVAL_MS);
 
-        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED
-                && ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
-            return;
-        }
+        boolean hasFine = ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED;
+        boolean hasCoarse = ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED;
+        if (!hasFine && !hasCoarse) return;
         if (locationManager == null) return;
 
         PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
@@ -131,16 +144,62 @@ public class BootLocationForegroundService extends Service {
             @Override public void onProviderDisabled(String provider) {}
         };
 
-        String provider = locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)
-                ? LocationManager.GPS_PROVIDER
-                : LocationManager.NETWORK_PROVIDER;
-        try {
-            locationManager.requestSingleUpdate(provider, pendingListener, workerHandler.getLooper());
-        } catch (SecurityException | IllegalArgumentException e) {
+        // GPS_PROVIDER는 ACCESS_FINE_LOCATION이 있어야만 쓸 수 있다 - "대략적 위치"만 허용한
+        // 사용자는 FINE이 없으므로 GPS 요청 하나만 걸면 매번 SecurityException으로 실패해
+        // 위치가 영원히 안 올라간다. 권한이 허용하는 provider 전부에 동시에 걸어서 먼저
+        // 응답하는 쪽을 쓴다 - 하나가 없거나 비활성화돼도 나머지로 계속 동작한다.
+        boolean requested = false;
+        if (hasFine && locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
+            requested |= requestFrom(LocationManager.GPS_PROVIDER);
+        }
+        if (locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
+            requested |= requestFrom(LocationManager.NETWORK_PROVIDER);
+        }
+        if (!requested) {
+            // 활성화된 provider가 하나도 없다(위치 서비스 자체가 꺼짐 등) - 그래도 최근에 알려진
+            // 위치가 있으면 그거라도 보고해서 "완전히 끊김"은 피한다.
+            reportLastKnownLocationIfAny(hasFine);
             releaseWakeLock();
             return;
         }
-        workerHandler.postDelayed(this::removePendingLocationRequest, LOCATION_TIMEOUT_MS);
+        workerHandler.postDelayed(() -> {
+            if (pendingListener == null) return; // 이미 응답 받아 처리됨
+            removePendingLocationRequest();
+            reportLastKnownLocationIfAny(hasFine);
+        }, LOCATION_TIMEOUT_MS);
+    }
+
+    private boolean requestFrom(String provider) {
+        try {
+            locationManager.requestSingleUpdate(provider, pendingListener, workerHandler.getLooper());
+            return true;
+        } catch (SecurityException | IllegalArgumentException e) {
+            return false;
+        }
+    }
+
+    // 정해진 시간 안에 새 위치를 못 받았을 때, provider에 남아있는 마지막 위치라도 있으면
+    // 그걸 대신 보고한다 - 완전히 새 신호는 아니지만, 사용자 입장에선 "끊김"보다 훨씬 낫다.
+    private void reportLastKnownLocationIfAny(boolean hasFine) {
+        if (locationManager == null) return;
+        Location best = null;
+        try {
+            if (hasFine) {
+                Location gps = safeLastKnown(LocationManager.GPS_PROVIDER);
+                if (gps != null) best = gps;
+            }
+            Location network = safeLastKnown(LocationManager.NETWORK_PROVIDER);
+            if (network != null && (best == null || network.getTime() > best.getTime())) best = network;
+        } catch (SecurityException ignored) {}
+        if (best != null) onLocationResolved(best);
+    }
+
+    private Location safeLastKnown(String provider) {
+        try {
+            return locationManager.getLastKnownLocation(provider);
+        } catch (SecurityException | IllegalArgumentException e) {
+            return null;
+        }
     }
 
     private void removePendingLocationRequest() {

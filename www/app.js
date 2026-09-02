@@ -178,13 +178,24 @@ function saveProfile(p) {
 // SharedPreferences에 그대로 미러링한다. localStorage는 그 시점에 접근 불가능하므로 별도 통로가 필요하다.
 function syncNativeProfile() {
   if (!IS_NATIVE || !NativeProfileBridge || !profile) return;
+  const wasSharing = !!profile.sharingEnabled;
   NativeProfileBridge.save({
-    sharingEnabled: !!profile.sharingEnabled,
+    sharingEnabled: wasSharing,
     memberId: profile.memberId,
     name: profile.name,
     groupCode: profile.groupCode,
     databaseURL: firebaseConfig.databaseURL,
-  }).catch((e) => console.warn("syncNativeProfile failed", e));
+  }).catch((e) => {
+    console.warn("syncNativeProfile failed", e);
+    // 예전엔 여기서 조용히 무시해서, 위치 권한을 거부해도 사용자는 "공유 켜짐" 토글만 보고
+    // 실제로는 아무것도 공유되지 않는 걸 몰랐다(친구들이 전부 "신호 없음"으로 보이던 원인).
+    if (wasSharing) {
+      toast("위치 공유를 시작하지 못했습니다 - 위치 권한을 허용했는지 확인해주세요.");
+      profile.sharingEnabled = false;
+      saveProfile(profile);
+      if ($("#sharingToggle")) $("#sharingToggle").checked = false;
+    }
+  });
 }
 
 function generateMemberId() {

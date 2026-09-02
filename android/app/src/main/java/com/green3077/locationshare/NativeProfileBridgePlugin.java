@@ -1,8 +1,6 @@
 package com.green3077.locationshare;
 
-import android.Manifest;
 import android.content.Intent;
-import android.os.Build;
 import androidx.core.content.ContextCompat;
 import com.getcapacitor.PermissionState;
 import com.getcapacitor.Plugin;
@@ -17,12 +15,17 @@ import com.getcapacitor.annotation.PermissionCallback;
  * 값을 SharedPreferences(ProfileStore)에 미러링하고, sharingEnabled에 따라
  * BootLocationForegroundService를 시작/정지시킨다. 위치 권한이 아직 없으면 여기서 먼저
  * 요청하고, 승인된 뒤에야 서비스를 실제로 시작한다.
+ *
+ * ACCESS_BACKGROUND_LOCATION은 일부러 요청하지 않는다 - foregroundServiceType="location"으로
+ * 선언된 포그라운드 서비스(알림이 떠 있는 동안)는 안드로이드가 이미 "포그라운드"로 취급해서
+ * 이 권한 없이도 위치를 계속 받을 수 있다. 예전엔 이 권한까지 별도 다이얼로그로 요청했는데,
+ * 기기별로 이 두 번째 요청이 조용히 걸리거나 실패하면서 아예 서비스가 시작되지 않는(친구
+ * 전원이 "신호 없음"으로 뜨는) 원인이었을 가능성이 높아 제거했다.
  */
 @CapacitorPlugin(
     name = "NativeProfileBridge",
     permissions = {
-        @Permission(alias = "location", strings = { Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION }),
-        @Permission(alias = "backgroundLocation", strings = { Manifest.permission.ACCESS_BACKGROUND_LOCATION })
+        @Permission(alias = "location", strings = { android.Manifest.permission.ACCESS_FINE_LOCATION, android.Manifest.permission.ACCESS_COARSE_LOCATION })
     }
 )
 public class NativeProfileBridgePlugin extends Plugin {
@@ -47,7 +50,8 @@ public class NativeProfileBridgePlugin extends Plugin {
             requestPermissionForAlias("location", call, "onLocationPermissionResult");
             return;
         }
-        proceedAfterForegroundPermission(call);
+        beginSharing();
+        call.resolve();
     }
 
     @PermissionCallback
@@ -60,23 +64,6 @@ public class NativeProfileBridgePlugin extends Plugin {
             call.reject("Location permission denied");
             return;
         }
-        proceedAfterForegroundPermission(call);
-    }
-
-    private void proceedAfterForegroundPermission(PluginCall call) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
-                && getPermissionState("backgroundLocation") != PermissionState.GRANTED) {
-            requestPermissionForAlias("backgroundLocation", call, "onBackgroundPermissionResult");
-            return;
-        }
-        beginSharing();
-        call.resolve();
-    }
-
-    @PermissionCallback
-    private void onBackgroundPermissionResult(PluginCall call) {
-        // 백그라운드 위치 권한이 거부돼도 서비스는 시작한다 - 포그라운드 서비스 알림이 떠 있는
-        // 동안은 기기/버전에 따라 이 권한 없이도 위치가 계속 갱신되는 경우가 많기 때문이다.
         beginSharing();
         call.resolve();
     }
