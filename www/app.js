@@ -176,17 +176,31 @@ function saveProfile(p) {
 
 // 재부팅 직후 BootReceiver(순수 네이티브, WebView 없음)가 이 값을 읽어 공유를 자동 재개할 수 있도록
 // SharedPreferences에 그대로 미러링한다. localStorage는 그 시점에 접근 불가능하므로 별도 통로가 필요하다.
+// saveProfile()과 startSharingLoop() 양쪽 모두 상태가 바뀔 때마다 이 함수를 부르는데, 토글
+// 한 번에 두 곳에서 연달아(같은 tick에 동기적으로) 호출되는 경우가 있다(예: sharingToggle
+// change 핸들러가 saveProfile()->startSharingLoop() 순으로 호출, 앱 시작 시 startApp()도
+// 동일). NativeProfileBridge.save()가 내부적으로 안드로이드 권한 다이얼로그를 띄우는데,
+// 이 요청이 응답을 받기 전에 똑같은 내용으로 또 호출되면 Capacitor 쪽에서 두 호출이 서로의
+// 콜백을 밀어내며 권한 요청 자체가 영영 응답을 못 받는 문제가 있었다(공유를 켜도 서비스가
+// 시작되지 않아 본인 포함 전원이 "신호 없음"으로 보이던 실제 원인). 직전과 완전히 같은
+// 내용이면 다시 호출하지 않는다.
+let lastSyncedProfileJSON = null;
 function syncNativeProfile() {
   if (!IS_NATIVE || !NativeProfileBridge || !profile) return;
   const wasSharing = !!profile.sharingEnabled;
-  NativeProfileBridge.save({
+  const payload = {
     sharingEnabled: wasSharing,
     memberId: profile.memberId,
     name: profile.name,
     groupCode: profile.groupCode,
     databaseURL: firebaseConfig.databaseURL,
-  }).catch((e) => {
+  };
+  const payloadJSON = JSON.stringify(payload);
+  if (payloadJSON === lastSyncedProfileJSON) return;
+  lastSyncedProfileJSON = payloadJSON;
+  NativeProfileBridge.save(payload).catch((e) => {
     console.warn("syncNativeProfile failed", e);
+    lastSyncedProfileJSON = null; // 실패했으니 다음 시도는 막지 않는다
     // 예전엔 여기서 조용히 무시해서, 위치 권한을 거부해도 사용자는 "공유 켜짐" 토글만 보고
     // 실제로는 아무것도 공유되지 않는 걸 몰랐다(친구들이 전부 "신호 없음"으로 보이던 원인).
     if (wasSharing) {
