@@ -1,3 +1,18 @@
+// 이 파일 어디선가 예외가 조용히 나면(특히 네이티브 전용 코드) 그 아래 코드가 전혀 실행되지
+// 않아 화면의 모든 버튼이 이유 없이 먹통이 된다("눌러도 반응 없음" - 실제로 있었던 문제).
+// 그런 침묵 실패를 눈에 보이는 토스트로 바꿔서 다음엔 바로 원인을 알 수 있게 한다.
+window.addEventListener("error", (e) => {
+  try {
+    const box = document.getElementById("toast-container");
+    if (!box) return;
+    const el = document.createElement("div");
+    el.className = "toast show";
+    el.style.background = "#c62828";
+    el.textContent = "오류: " + (e.message || e.error || "알 수 없음");
+    box.appendChild(el);
+  } catch (ignored) {}
+});
+
 const APP_VERSION_CODE = 17; // android/app/build.gradle의 versionCode와 항상 같이 올릴 것
 const APP_VERSION_NAME = "1.16";
 const UPDATE_MANIFEST_URL = "https://green3077.github.io/location-share/version.json";
@@ -32,11 +47,22 @@ const LOCATION_HISTORY_MAX_ENTRIES = 500; // 기록 화면에 보여줄 최근 �
 // 순수 웹(GitHub Pages 등)에서는 이런 네이티브 서비스가 없으므로 브라우저 탭이 열려있는 동안만
 // setInterval로 주기 갱신하는 기존 방식을 그대로 쓴다.
 const IS_NATIVE = !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
-const LocalNotifications = IS_NATIVE ? window.Capacitor.registerPlugin("LocalNotifications") : null;
-const NativeProfileBridge = IS_NATIVE ? window.Capacitor.registerPlugin("NativeProfileBridge") : null;
-const UpdateBridge = IS_NATIVE ? window.Capacitor.registerPlugin("UpdateBridge") : null;
-const BatteryOptimizationBridge = IS_NATIVE ? window.Capacitor.registerPlugin("BatteryOptimizationBridge") : null;
-const AutoStartBridge = IS_NATIVE ? window.Capacitor.registerPlugin("AutoStartBridge") : null;
+// registerPlugin() 하나가 던지는 예외 때문에 이 파일 전체(버튼 바인딩 포함)가 멈추면 안 되므로
+// 각각 개별적으로 감싼다.
+function safeRegisterPlugin(name) {
+  if (!IS_NATIVE) return null;
+  try {
+    return window.Capacitor.registerPlugin(name);
+  } catch (e) {
+    console.warn("registerPlugin failed: " + name, e);
+    return null;
+  }
+}
+const LocalNotifications = safeRegisterPlugin("LocalNotifications");
+const NativeProfileBridge = safeRegisterPlugin("NativeProfileBridge");
+const UpdateBridge = safeRegisterPlugin("UpdateBridge");
+const BatteryOptimizationBridge = safeRegisterPlugin("BatteryOptimizationBridge");
+const AutoStartBridge = safeRegisterPlugin("AutoStartBridge");
 const BATTERY_OPT_ASKED_KEY = "ls_battery_opt_asked_v1";
 
 const MAP_PROVIDER_KEY = "ls_map_provider_v1";
@@ -177,14 +203,23 @@ function formatRelativeTime(ts) {
 // ---------- 초기화 ----------
 
 function init() {
+  // 버튼 클릭 바인딩은 아래 firebase 초기화가 실패하더라도(네트워크 문제 등) 항상 먼저
+  // 끝나야 한다 - 순서가 바뀌어 있으면 firebase 쪽에서 던진 예외 하나 때문에 로그인
+  // 화면을 포함한 모든 버튼이 조용히 죽어버린다(눌러도 아무 반응 없음 - 실제로 있었던 문제).
+  bindStaticHandlers();
+
   if (!firebaseConfig.apiKey) {
     resetScreenStack("screen-no-config");
     return;
   }
-  firebase.initializeApp(firebaseConfig);
-  db = firebase.database();
-
-  bindStaticHandlers();
+  try {
+    firebase.initializeApp(firebaseConfig);
+    db = firebase.database();
+  } catch (e) {
+    console.warn("firebase init failed", e);
+    toast("초기화에 실패했습니다: " + (e && e.message ? e.message : e));
+    return;
+  }
 
   if (!getGatePassed()) {
     resetScreenStack("screen-login");
