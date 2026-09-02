@@ -1,0 +1,8 @@
+{
+  "appId": "com.green3077.locationshare",
+  "appName": "위치공유",
+  "webDir": "www",
+  "android": {
+    "allowMixedContent": false
+  }
+}
