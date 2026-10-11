@@ -252,6 +252,30 @@ input[type="text"] {
   flex-shrink: 0;
 }
 
+.address-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.address-row .hint-text { flex: 1; min-width: 0; }
+.address-row .btn-copy-address { margin-top: 8px; }
+.btn-copy-address {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--primary);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.6;
+  vertical-align: middle;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+.btn-copy-address:active { background: #eff6ff; }
+
 .connection-check {
   margin: 4px 0 10px;
   padding: 10px 12px;
