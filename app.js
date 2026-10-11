@@ -331,6 +331,17 @@ function bindStaticHandlers() {
     goBackScreen();
   });
 
+  // 주소 옆 복사 버튼은 화면마다 새로 그려지므로 문서 전체에서 한 번에 처리한다.
+  document.addEventListener("click", (e) => {
+    const btn = e.target.closest(".btn-copy-address");
+    if (!btn) return;
+    e.stopPropagation();
+    copyText(btn.dataset.address).then(
+      () => toast("주소를 복사했습니다."),
+      () => toast("주소를 복사하지 못했습니다.")
+    );
+  });
+
   $("#groupCodeDisplay").addEventListener("click", () => {
     navigator.clipboard.writeText(profile.groupCode).then(() => toast("그룹 코드를 복사했습니다."));
   });
@@ -522,12 +533,12 @@ function selectMember(memberId, m) {
     if (isStale) {
       // 오프라인 상태에서는 주소를 이 칸이 아니라 아래 연결 확인 박스에 "마지막으로 신호
       // 받은 위치"로 시각과 함께 합쳐서 보여준다 (renderConnectionCheck에서 처리).
-      $("#selectedAddressText").textContent = "";
+      setSelectedAddressText("");
     } else {
       showMemberAddress(m.name, m.lat, m.lng);
     }
   } else {
-    $("#selectedAddressText").textContent = "아직 수신된 위치가 없습니다.";
+    setSelectedAddressText("아직 수신된 위치가 없습니다.");
   }
   if (memberId !== profile.memberId && isStale) {
     // 회색(오프라인)인 친구는 "요청을 보내고 기다리는" 느낌 대신, 누르는 즉시 위치를 받아오는
@@ -663,6 +674,7 @@ function renderConnectionCheck(m) {
       timeText +
       ")\n마지막으로 신호 받은 위치: " +
       (address || "주소를 찾을 수 없습니다.");
+    if (address) box.appendChild(createCopyAddressButton(address));
   });
 }
 
@@ -670,12 +682,20 @@ function renderConnectionCheck(m) {
 async function showMemberAddress(name, lat, lng) {
   const box = $("#selectedAddressBox");
   $("#selectedAddressTitle").textContent = name + "님 위치";
-  $("#selectedAddressText").textContent = "주소를 불러오는 중...";
+  setSelectedAddressText("주소를 불러오는 중...");
   box.classList.remove("hidden");
   const address = await reverseGeocode(lat, lng);
   // 그 사이에 다른 이름을 눌러 제목이 바뀌었다면 늦게 도착한 결과를 덮어쓰지 않는다.
   if ($("#selectedAddressTitle").textContent !== name + "님 위치") return;
-  $("#selectedAddressText").textContent = address || "주소를 찾을 수 없습니다.";
+  setSelectedAddressText(address || "주소를 찾을 수 없습니다.", address);
+}
+
+// 실제 주소를 찾았을 때만 옆에 복사 버튼을 보여준다 (안내 문구는 복사할 필요가 없음).
+function setSelectedAddressText(text, address) {
+  $("#selectedAddressText").textContent = text;
+  const btn = $("#btnCopySelectedAddress");
+  btn.dataset.address = address || "";
+  btn.classList.toggle("hidden", !address);
 }
 
 // 카카오맵을 쓰는 중이면 카카오의 좌표->주소 변환(Geocoder)을, 오픈맵이면 무료 공개 서비스인
@@ -1099,7 +1119,9 @@ function renderConnectionLog() {
           : "신호 끊김" + (entry.minutesSince != null ? ` (${entry.minutesSince}분간 갱신 없음)` : "");
       const dotClass = entry.status === "ok" ? "log-dot-ok" : "log-dot-lost";
       const statusClass = entry.status === "ok" ? "" : " log-status-lost";
-      const addressHtml = entry.address ? `<div class="log-address">📍 ${entry.address}</div>` : "";
+      const addressHtml = entry.address
+        ? `<div class="log-address">📍 ${escapeHtml(entry.address)}${copyAddressButtonHtml(entry.address)}</div>`
+        : "";
       return `
         <div class="log-row">
           <div class="log-row-top">
@@ -1168,8 +1190,53 @@ async function fillLocationHistoryAddresses(entries) {
   const rows = $("#locationHistoryList").querySelectorAll(".log-address");
   for (let i = 0; i < entries.length; i++) {
     const address = await reverseGeocodeCached(entries[i].lat, entries[i].lng);
-    if (rows[i]) rows[i].textContent = "📍 " + (address || "주소를 찾을 수 없습니다.");
+    if (!rows[i]) continue;
+    rows[i].textContent = "📍 " + (address || "주소를 찾을 수 없습니다.");
+    if (address) rows[i].appendChild(createCopyAddressButton(address));
   }
+}
+
+// ---------- 주소 복사 ----------
+
+function createCopyAddressButton(address) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "btn-copy-address";
+  btn.dataset.address = address;
+  btn.setAttribute("aria-label", "주소 복사");
+  btn.textContent = "복사";
+  return btn;
+}
+
+function copyAddressButtonHtml(address) {
+  return `<button type="button" class="btn-copy-address" data-address="${escapeHtml(address)}" aria-label="주소 복사">복사</button>`;
+}
+
+function escapeHtml(text) {
+  return String(text).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+}
+
+// 앱 웹뷰에 따라 navigator.clipboard가 막혀 있을 수 있어, 실패하면 예전 방식으로 한 번 더 시도한다.
+function copyText(text) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    return navigator.clipboard.writeText(text).catch(() => legacyCopyText(text));
+  }
+  return legacyCopyText(text);
+}
+
+function legacyCopyText(text) {
+  return new Promise((resolve, reject) => {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand("copy");
+    ta.remove();
+    ok ? resolve() : reject(new Error("copy failed"));
+  });
 }
 
 // writeLocation()이 실시간 위치를 쓸 때마다 같이 호출된다. 참여자 전원에 대해 항상,
