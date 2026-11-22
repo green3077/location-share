@@ -1,0 +1,14 @@
+{
+  "appId": "com.locationshare.app",
+  "appName": "위치 공유",
+  "webDir": "www",
+  "android": {
+    "allowMixedContent": false,
+    "useLegacyBridge": true
+  },
+  "plugins": {
+    "CapacitorHttp": {
+      "enabled": true
+    }
+  }
+}

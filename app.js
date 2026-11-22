@@ -1,5 +1,5 @@
-const APP_VERSION_CODE = 17; // android/app/build.gradle의 versionCode와 항상 같이 올릴 것
-const APP_VERSION_NAME = "1.16";
+const APP_VERSION_CODE = 18; // android/app/build.gradle의 versionCode와 항상 같이 올릴 것
+const APP_VERSION_NAME = "1.17";
 const UPDATE_MANIFEST_URL = "https://green3077.github.io/location-share/version.json";
 
 const GATE_KEY = "ls_gate_v1";
@@ -10,8 +10,10 @@ const PROFILE_KEY = "ls_profile_v1";
 const UPDATE_INTERVAL_MS = 3 * 60 * 1000; // 3분마다 위치 갱신 (웹: 탭이 열려있을 때만. 네이티브: BootLocationForegroundService가 같은 3분 간격을 쓴다 - android/.../BootLocationForegroundService.java의 UPDATE_INTERVAL_MS와 항상 같이 맞출 것)
 // 네이티브 앱은 이제(2026-08-17) 순수 네이티브 포그라운드 서비스가 "움직임과 무관하게" 이 간격대로
 // 계속 위치를 보고한다(예전의 distanceFilter 기반 워처와 달리 - 그래서 안 움직여도 신호가 안 끊긴다).
-// 그래도 GPS 확보 지연/일시적 네트워크 문제를 감안해 갱신 주기의 3배 정도 여유를 둔다.
-const STALE_MS = UPDATE_INTERVAL_MS * 3; // 9분
+// 그래도 GPS 확보 지연/일시적 네트워크 문제, 그리고 화면이 꺼진 깊은 절전 상태에서 안드로이드가
+// 알람을 몇 분씩 미루는 경우를 감안해 갱신 주기의 5배 여유를 둔다(v1.17: 9분 -> 15분, 9분은
+// 절전 중 한 번만 늦어져도 회색으로 떨어져 "신호 끊김"처럼 보였다).
+const STALE_MS = UPDATE_INTERVAL_MS * 5; // 15분
 
 const CONNECTION_LOG_INTERVAL_MS = 10 * 60 * 1000; // 10분마다 친구별 신호 수신 상태 기록
 const CONNECTION_LOG_KEY = "ls_connection_log_v1";
@@ -32,12 +34,22 @@ const LOCATION_HISTORY_MAX_ENTRIES = 500; // 기록 화면에 보여줄 최근 �
 // 순수 웹(GitHub Pages 등)에서는 이런 네이티브 서비스가 없으므로 브라우저 탭이 열려있는 동안만
 // setInterval로 주기 갱신하는 기존 방식을 그대로 쓴다.
 const IS_NATIVE = !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
-const LocalNotifications = IS_NATIVE ? window.Capacitor.registerPlugin("LocalNotifications") : null;
-const NativeProfileBridge = IS_NATIVE ? window.Capacitor.registerPlugin("NativeProfileBridge") : null;
-const UpdateBridge = IS_NATIVE ? window.Capacitor.registerPlugin("UpdateBridge") : null;
-const BatteryOptimizationBridge = IS_NATIVE ? window.Capacitor.registerPlugin("BatteryOptimizationBridge") : null;
-const AutoStartBridge = IS_NATIVE ? window.Capacitor.registerPlugin("AutoStartBridge") : null;
-const BATTERY_OPT_ASKED_KEY = "ls_battery_opt_asked_v1";
+// registerPlugin() 하나가 던지는 예외 때문에 이 파일 전체(버튼 바인딩 포함)가 멈추면 안 되므로
+// 각각 개별적으로 감싼다.
+function safeRegisterPlugin(name) {
+  if (!IS_NATIVE) return null;
+  try {
+    return window.Capacitor.registerPlugin(name);
+  } catch (e) {
+    console.warn("registerPlugin failed: " + name, e);
+    return null;
+  }
+}
+const LocalNotifications = safeRegisterPlugin("LocalNotifications");
+const NativeProfileBridge = safeRegisterPlugin("NativeProfileBridge");
+const UpdateBridge = safeRegisterPlugin("UpdateBridge");
+const BatteryOptimizationBridge = safeRegisterPlugin("BatteryOptimizationBridge");
+const AutoStartBridge = safeRegisterPlugin("AutoStartBridge");
 
 const MAP_PROVIDER_KEY = "ls_map_provider_v1";
 function getMapProvider() {
@@ -150,15 +162,36 @@ function saveProfile(p) {
 
 // 재부팅 직후 BootReceiver(순수 네이티브, WebView 없음)가 이 값을 읽어 공유를 자동 재개할 수 있도록
 // SharedPreferences에 그대로 미러링한다. localStorage는 그 시점에 접근 불가능하므로 별도 통로가 필요하다.
+// 토글 한 번에 saveProfile()과 startSharingLoop()이 같은 tick에 연달아 이 함수를 부르는데,
+// NativeProfileBridge.save()는 위치 권한 다이얼로그를 띄우는 비동기 호출이라 응답 전에 같은
+// 내용으로 또 불리면 권한 콜백이 서로 밀려 서비스가 아예 시작되지 않을 수 있다 - 직전과 같은
+// 내용이면 다시 부르지 않는다.
+let lastSyncedProfileJSON = null;
 function syncNativeProfile() {
   if (!IS_NATIVE || !NativeProfileBridge || !profile) return;
-  NativeProfileBridge.save({
-    sharingEnabled: !!profile.sharingEnabled,
+  const wasSharing = !!profile.sharingEnabled;
+  const payload = {
+    sharingEnabled: wasSharing,
     memberId: profile.memberId,
     name: profile.name,
     groupCode: profile.groupCode,
     databaseURL: firebaseConfig.databaseURL,
-  }).catch((e) => console.warn("syncNativeProfile failed", e));
+  };
+  const payloadJSON = JSON.stringify(payload);
+  if (payloadJSON === lastSyncedProfileJSON) return;
+  lastSyncedProfileJSON = payloadJSON;
+  NativeProfileBridge.save(payload).catch((e) => {
+    console.warn("syncNativeProfile failed", e);
+    lastSyncedProfileJSON = null; // 실패했으니 다음 시도는 막지 않는다
+    // 예전엔 조용히 무시해서, 위치 권한을 거부해도 "공유 켜짐" 토글만 보이고 실제로는
+    // 아무것도 공유되지 않았다.
+    if (wasSharing) {
+      toast("위치 공유를 시작하지 못했습니다 - 위치 권한을 허용했는지 확인해주세요.");
+      profile.sharingEnabled = false;
+      saveProfile(profile);
+      if ($("#sharingToggle")) $("#sharingToggle").checked = false;
+    }
+  });
 }
 
 function generateMemberId() {
@@ -177,14 +210,22 @@ function formatRelativeTime(ts) {
 // ---------- 초기화 ----------
 
 function init() {
+  // 버튼 바인딩은 firebase 초기화가 실패하더라도 항상 먼저 끝나야 한다 - 그렇지 않으면 예외
+  // 하나 때문에 로그인 화면을 포함한 모든 버튼이 먹통이 된다.
+  bindStaticHandlers();
+
   if (!firebaseConfig.apiKey) {
     resetScreenStack("screen-no-config");
     return;
   }
-  firebase.initializeApp(firebaseConfig);
-  db = firebase.database();
-
-  bindStaticHandlers();
+  try {
+    firebase.initializeApp(firebaseConfig);
+    db = firebase.database();
+  } catch (e) {
+    console.warn("firebase init failed", e);
+    toast("초기화에 실패했습니다: " + (e && e.message ? e.message : e));
+    return;
+  }
 
   if (!getGatePassed()) {
     resetScreenStack("screen-login");
@@ -266,6 +307,21 @@ function bindStaticHandlers() {
       await BatteryOptimizationBridge.requestExemption();
     } catch (e) {
       console.warn("requestExemption failed", e);
+    }
+  });
+  $("#btnBgLocation").addEventListener("click", async () => {
+    toast('권한 > 위치 > "항상 허용"을 선택해주세요.', 4000);
+    try {
+      await BatteryOptimizationBridge.openAppSettings();
+    } catch (e) {
+      console.warn("openAppSettings failed", e);
+    }
+  });
+  $("#btnExactAlarm").addEventListener("click", async () => {
+    try {
+      await BatteryOptimizationBridge.openExactAlarmSettings();
+    } catch (e) {
+      console.warn("openExactAlarmSettings failed", e);
     }
   });
   $("#btnAutoStartSettings").addEventListener("click", async () => {
@@ -373,6 +429,8 @@ function bindStaticHandlers() {
     if (document.visibilityState === "visible") {
       maybeLogConnectionStatuses(false);
       refreshOnForeground();
+      // 설정 화면에서 권한을 바꾸고 돌아왔을 수 있으므로 점검 카드를 다시 확인한다.
+      if (IS_NATIVE && !$("#batteryCard").classList.contains("hidden")) refreshBatteryCard();
     }
   });
 }
@@ -380,7 +438,7 @@ function bindStaticHandlers() {
 function startApp() {
   syncNativeProfile(); // 기존 설치본(이 필드가 생기기 전)도 네이티브 저장소에 반영
   requestNotificationPermission();
-  maybeRequestBatteryOptimizationExemption();
+  maybeAskForReliabilitySettings();
   $("#groupCodeDisplay").textContent = profile.groupCode;
   initMap(() => {
     startListening();
@@ -883,48 +941,84 @@ function requestNotificationPermission() {
   }
 }
 
-// 삼성 등 일부 제조사의 배터리 최적화는 위치 공유용 포그라운드 서비스를 조용히 죽여버릴 수
-// 있다. 앱 시작마다(설치 이후 딱 한 번만 사용자에게 물어봄 - BATTERY_OPT_ASKED_KEY) 이미
-// 제외돼있는지 확인하고, 아니라면 이유를 설명하는 확인창을 띄운 뒤 시스템 설정 화면으로
-// 안내한다. 설정 화면에도 언제든 다시 열 수 있는 버튼을 별도로 둔다(아래 refreshBatteryCard).
-async function maybeRequestBatteryOptimizationExemption() {
-  if (!IS_NATIVE || !BatteryOptimizationBridge) return;
-  if (localStorage.getItem(BATTERY_OPT_ASKED_KEY) === "1") return;
-  let ignoring = true;
+// 신호가 끊기지 않으려면 기기 설정 두 가지가 꼭 필요하다(v1.17):
+//  1) 위치 권한 "항상 허용" - 안드로이드가 앱을 정리한 뒤 백그라운드에서 다시 켜진 위치 서비스는
+//     이 권한이 없으면 위치를 받지 못한다(Android 11+). v1.16까지 신호 끊김의 가장 큰 원인.
+//  2) 배터리 최적화 제외 - 절전 기능이 서비스를 죽이거나 알람을 미루지 못하게 한다.
+// 예전엔 배터리 최적화만, 그것도 설치 후 딱 한 번만 물어서 한 번 "취소"하면 다시는 안내가 없었다.
+// 이제는 공유가 켜져 있는데 둘 중 하나라도 빠져 있으면 앱을 열 때마다 하나씩 안내한다.
+let reliabilityPromptShownThisLaunch = false;
+async function getReliabilityStatus() {
+  if (!IS_NATIVE || !BatteryOptimizationBridge) return null;
   try {
-    ({ ignoring } = await BatteryOptimizationBridge.isIgnoringBatteryOptimizations());
+    return await BatteryOptimizationBridge.getReliabilityStatus();
   } catch (e) {
-    console.warn("isIgnoringBatteryOptimizations failed", e);
-    return;
-  }
-  localStorage.setItem(BATTERY_OPT_ASKED_KEY, "1");
-  if (ignoring) return;
-  const ok = await confirmDialog(
-    "위치 공유가 중간에 끊기지 않도록, 이 앱을 배터리 최적화 대상에서 제외해주세요. 다음 화면에서 '허용'을 눌러주세요."
-  );
-  if (!ok) return;
-  try {
-    await BatteryOptimizationBridge.requestExemption();
-  } catch (e) {
-    console.warn("requestExemption failed", e);
+    console.warn("getReliabilityStatus failed", e);
+    return null;
   }
 }
 
-// 설정 화면을 열 때마다 현재 배터리 최적화 제외 상태를 다시 확인해서 카드 문구를 갱신한다
-// (사용자가 시스템 설정에서 직접 바꿨을 수도 있으므로 캐시하지 않고 매번 새로 확인).
+async function maybeAskForReliabilitySettings() {
+  if (!IS_NATIVE || !BatteryOptimizationBridge || reliabilityPromptShownThisLaunch) return;
+  if (!profile || !profile.sharingEnabled) return;
+  // 첫 실행 때 위치 권한 다이얼로그(NativeProfileBridge)가 먼저 끝나도록 잠깐 기다린다.
+  await new Promise((r) => setTimeout(r, 3000));
+  const st = await getReliabilityStatus();
+  if (!st || !st.locationGranted) return;
+  reliabilityPromptShownThisLaunch = true;
+  if (!st.backgroundLocation) {
+    const ok = await confirmDialog(
+      '화면이 꺼져 있거나 앱을 닫아도 친구들에게 신호가 끊기지 않으려면 위치 권한을 "항상 허용"으로 바꿔주세요.<br><br>다음 화면에서 권한 > 위치 > "항상 허용"을 선택하면 됩니다.',
+      { okText: "설정 열기", cancelText: "나중에" }
+    );
+    if (ok) {
+      try {
+        await BatteryOptimizationBridge.openAppSettings();
+      } catch (e) {
+        console.warn("openAppSettings failed", e);
+      }
+    }
+    return; // 한 번에 하나씩만 - 나머지는 다음 실행 때(또는 설정 화면 점검 카드에서)
+  }
+  if (!st.batteryOptimizationIgnored) {
+    const ok = await confirmDialog(
+      "위치 공유가 중간에 끊기지 않도록, 이 앱을 배터리 최적화 대상에서 제외해주세요. 다음 화면에서 '허용'을 눌러주세요.",
+      { okText: "허용하러 가기", cancelText: "나중에" }
+    );
+    if (ok) {
+      try {
+        await BatteryOptimizationBridge.requestExemption();
+      } catch (e) {
+        console.warn("requestExemption failed", e);
+      }
+    }
+  }
+}
+
+// 설정 화면을 열 때마다(그리고 설정에서 돌아올 때마다) 현재 상태를 새로 확인해 점검 목록을 그린다.
 async function refreshBatteryCard() {
   if (!IS_NATIVE || !BatteryOptimizationBridge) return;
   $("#batteryCard").classList.remove("hidden");
-  $("#batteryOptStatusText").textContent = "확인 중...";
-  try {
-    const { ignoring } = await BatteryOptimizationBridge.isIgnoringBatteryOptimizations();
-    $("#batteryOptStatusText").textContent = ignoring
-      ? "✅ 이미 배터리 최적화 대상에서 제외되어 있습니다."
-      : "⚠️ 아직 배터리 최적화 대상입니다. 절전 기능이 백그라운드 위치 공유를 중간에 끊을 수 있어요.";
-  } catch (e) {
-    console.warn("refreshBatteryCard failed", e);
-    $("#batteryOptStatusText").textContent = "상태를 확인하지 못했습니다.";
+  const list = $("#reliabilityList");
+  list.textContent = "확인 중...";
+  const st = await getReliabilityStatus();
+  if (!st) {
+    list.textContent = "상태를 확인하지 못했습니다.";
+    return;
   }
+  const row = (ok, text) => `<div>${ok ? "✅" : "⚠️"} ${text}</div>`;
+  const lastSent = st.lastSentAt ? formatRelativeTime(st.lastSentAt) : "아직 없음";
+  list.innerHTML = [
+    row(st.locationGranted, "위치 권한"),
+    row(st.backgroundLocation, '위치 "항상 허용" (앱을 닫아도 공유)'),
+    row(st.batteryOptimizationIgnored, "배터리 최적화 제외"),
+    row(st.exactAlarms, "3분 주기 알람"),
+    row(st.notifications, '알림 표시 ("위치 공유 중" 알림을 끄면 일부 기기에서 서비스가 정리됨)'),
+    `<div style="margin-top:6px">마지막으로 내 위치를 보낸 시각: ${lastSent}</div>`,
+  ].join("");
+  $("#btnBgLocation").classList.toggle("hidden", st.backgroundLocation && st.locationGranted && st.notifications);
+  $("#btnBatteryOptExempt").classList.toggle("hidden", st.batteryOptimizationIgnored);
+  $("#btnExactAlarm").classList.toggle("hidden", st.exactAlarms);
 }
 
 // 다른 참여자가 오프라인(회색)에서 다시 온라인(초록)으로 바뀌면 시스템 알림을 띄운다.
@@ -1193,11 +1287,15 @@ function maybeWriteLocationHistory(lat, lng, accuracy) {
 // 자체적으로 네트워크 요청을 지연시키는데, capacitor.config.json에서 켠
 // CapacitorHttp가 fetch를 네이티브 네트워킹으로 우회시켜주므로 백그라운드에서도
 // 안정적으로 위치가 기록된다 (SDK의 웹소켓 연결은 이 우회의 혜택을 받지 못한다).
+// PATCH(v1.17): 예전엔 PUT으로 내 노드 전체를 덮어써서, 같은 노드 아래 쌓이던 위치 기록(history)과
+// 친구의 위치 요청 표시(locationRequestedAt)가 3분마다 지워졌다. 바뀌는 필드만 갱신한다.
+// (PATCH는 일부 HTTP 경로에서 지원이 들쭉날쭉해서, Firebase REST가 공식 지원하는 POST +
+// x-http-method-override=PATCH 형태로 보낸다 - 네이티브 서비스도 같은 방식.)
 function writeLocation(lat, lng, accuracy) {
-  const url = `${firebaseConfig.databaseURL}/groups/${encodeURIComponent(profile.groupCode)}/members/${encodeURIComponent(profile.memberId)}.json`;
+  const url = `${firebaseConfig.databaseURL}/groups/${encodeURIComponent(profile.groupCode)}/members/${encodeURIComponent(profile.memberId)}.json?x-http-method-override=PATCH`;
   maybeWriteLocationHistory(lat, lng, accuracy);
   return fetch(url, {
-    method: "PUT",
+    method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       name: profile.name,
