@@ -1,5 +1,13 @@
-const APP_VERSION_CODE = 18; // android/app/build.gradle의 versionCode와 항상 같이 올릴 것
-const APP_VERSION_NAME = "1.17";
+// 어디선가 예외가 조용히 나면 그 아래 코드가 실행되지 않아 화면이 이유 없이 비어 보인다.
+// 그런 침묵 실패를 눈에 보이는 토스트로 바꿔 원인을 바로 알 수 있게 한다.
+window.addEventListener("error", (e) => {
+  try {
+    if (typeof toast === "function") toast("오류: " + (e.message || "알 수 없음"), 6000);
+  } catch (ignored) {}
+});
+
+const APP_VERSION_CODE = 19; // android/app/build.gradle의 versionCode와 항상 같이 올릴 것
+const APP_VERSION_NAME = "1.18";
 const UPDATE_MANIFEST_URL = "https://green3077.github.io/location-share/version.json";
 
 const GATE_KEY = "ls_gate_v1";
@@ -781,10 +789,28 @@ function startListening() {
   lastMembersData = {}; // 이전 그룹의 캐시된 데이터가 그대로 남아 다음 렌더링에 섞이지 않도록 비운다
 
   membersRef = db.ref(`groups/${profile.groupCode}/members`);
-  membersRef.on("value", (snapshot) => {
-    if (myGeneration !== groupListenGeneration) return; // 그룹이 바뀐 뒤 뒤늦게 도착한 옛 그룹 값은 버린다
-    renderMembers(snapshot.val() || {});
-  });
+  lastSdkMembersAt = 0;
+  membersRef.on(
+    "value",
+    (snapshot) => {
+      if (myGeneration !== groupListenGeneration) return; // 그룹이 바뀐 뒤 뒤늦게 도착한 옛 그룹 값은 버린다
+      lastSdkMembersAt = Date.now();
+      renderMembers(snapshot.val() || {});
+    },
+    (err) => {
+      console.warn("members listener failed", err);
+      lastMembersError = "실시간 연결 실패: " + (err && err.message ? err.message : err);
+    }
+  );
+
+  // v1.18: 실시간(SDK 웹소켓) 리스너가 앱(APK) 안에서 연결을 못 맺으면 참여자 목록이 아예 비어
+  // 보였다(웹에서는 정상). 시작하자마자 REST로 한 번 받아오고, 이후에도 실시간 값이 45초 넘게
+  // 안 오면 30초마다 REST로 직접 받아온다 - 어느 한 통로만 살아 있어도 목록이 보인다.
+  if (membersPollIntervalId) clearInterval(membersPollIntervalId);
+  pollMembersRest(myGeneration, true);
+  membersPollIntervalId = setInterval(() => {
+    if (Date.now() - lastSdkMembersAt > 45 * 1000) pollMembersRest(myGeneration, false);
+  }, 30 * 1000);
 
   // 위치 요청 감지는 두 경로를 함께 쓴다: (1) 실시간 리스너(포그라운드에서는 거의 즉시 반응)와
   // (2) 1분마다 REST로 직접 확인하는 폴링. 실시간 리스너(SDK 웹소켓)만 쓰면 화면이 꺼진 채
@@ -802,7 +828,39 @@ function startListening() {
   locationRequestPollIntervalId = setInterval(pollForLocationRequest, 60 * 1000);
 }
 
+let membersPollIntervalId = null;
+let lastSdkMembersAt = 0;
+let lastMembersError = null;
+let membersErrorShown = false;
+
+async function pollMembersRest(myGeneration, isFirst) {
+  if (!profile || !firebaseConfig.databaseURL) return;
+  try {
+    const url = `${firebaseConfig.databaseURL}/groups/${encodeURIComponent(profile.groupCode)}/members.json?t=${Date.now()}`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const data = await res.json();
+    if (myGeneration !== groupListenGeneration) return;
+    // 첫 요청 직후 실시간 값이 이미 와 있으면 굳이 덮어쓰지 않는다(그쪽이 더 최신).
+    if (isFirst && lastSdkMembersAt) return;
+    lastMembersError = null;
+    renderMembers(data || {});
+  } catch (e) {
+    console.warn("pollMembersRest failed", e);
+    lastMembersError = "서버 연결 실패: " + (e && e.message ? e.message : e);
+    // 실시간도 아직 아무 값을 못 받았다면 원인을 화면에 보여준다(같은 실행 중 한 번만).
+    if (!lastSdkMembersAt && !membersErrorShown) {
+      membersErrorShown = true;
+      toast(lastMembersError + " - 인터넷 연결을 확인해주세요.", 6000);
+    }
+  }
+}
+
 function stopListening() {
+  if (membersPollIntervalId) {
+    clearInterval(membersPollIntervalId);
+    membersPollIntervalId = null;
+  }
   if (membersRef) membersRef.off();
   membersRef = null;
   if (myRequestRef) myRequestRef.off();
