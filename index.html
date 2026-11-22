@@ -126,9 +126,12 @@
     <button id="btnCheckUpdate" class="btn-secondary" style="width:100%">업데이트 확인</button>
   </div>
   <div class="card hidden" id="batteryCard">
-    <div class="panel-title">배터리 최적화</div>
-    <p class="hint-text" id="batteryOptStatusText"></p>
-    <button id="btnBatteryOptExempt" class="btn-secondary" style="width:100%">배터리 최적화 제외 허용</button>
+    <div class="panel-title">신호 끊김 방지 점검</div>
+    <p class="hint-text">아래 항목이 모두 ✅여야 화면이 꺼져 있거나 앱을 닫아도 신호가 끊기지 않습니다.</p>
+    <div id="reliabilityList" class="hint-text"></div>
+    <button id="btnBgLocation" class="btn-secondary hidden" style="width:100%;margin-top:8px">위치 권한 "항상 허용" 설정 열기</button>
+    <button id="btnBatteryOptExempt" class="btn-secondary hidden" style="width:100%;margin-top:8px">배터리 최적화 제외 허용</button>
+    <button id="btnExactAlarm" class="btn-secondary hidden" style="width:100%;margin-top:8px">알람 및 리마인더 허용</button>
   </div>
   <div class="card hidden" id="autoStartCard">
     <div class="panel-title">자동 실행 허용</div>
