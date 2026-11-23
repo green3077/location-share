@@ -6,8 +6,8 @@ window.addEventListener("error", (e) => {
   } catch (ignored) {}
 });
 
-const APP_VERSION_CODE = 20; // android/app/build.gradle의 versionCode와 항상 같이 올릴 것
-const APP_VERSION_NAME = "1.19";
+const APP_VERSION_CODE = 21; // android/app/build.gradle의 versionCode와 항상 같이 올릴 것
+const APP_VERSION_NAME = "1.20";
 const UPDATE_MANIFEST_URL = "https://green3077.github.io/location-share/version.json";
 
 const GATE_KEY = "ls_gate_v1";
@@ -44,12 +44,16 @@ const LOCATION_HISTORY_MAX_ENTRIES = 500; // 기록 화면에 보여줄 최근 �
 const IS_NATIVE = !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
 // registerPlugin() 하나가 던지는 예외 때문에 이 파일 전체(버튼 바인딩 포함)가 멈추면 안 되므로
 // 각각 개별적으로 감싼다.
+// 실패하면(예: capacitor.js 누락으로 registerPlugin 자체가 없음) 조용히 넘어가지 않고 화면에
+// 알린다 - v1.17~1.19는 이 실패가 조용히 묻혀 위치 공유 서비스가 아예 시작되지 않았다.
+let nativePluginError = null;
 function safeRegisterPlugin(name) {
   if (!IS_NATIVE) return null;
   try {
     return window.Capacitor.registerPlugin(name);
   } catch (e) {
     console.warn("registerPlugin failed: " + name, e);
+    nativePluginError = nativePluginError || name + ": " + (e && e.message ? e.message : e);
     return null;
   }
 }
@@ -444,6 +448,9 @@ function bindStaticHandlers() {
 }
 
 function startApp() {
+  if (nativePluginError) {
+    toast("앱 내부 오류로 위치 공유를 시작할 수 없습니다 (" + nativePluginError + "). 개발자에게 알려주세요.", 10000);
+  }
   syncNativeProfile(); // 기존 설치본(이 필드가 생기기 전)도 네이티브 저장소에 반영
   requestNotificationPermission();
   maybeAskForReliabilitySettings();

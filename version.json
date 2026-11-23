@@ -1,6 +1,6 @@
 {
-  "versionCode": 20,
-  "versionName": "1.19",
+  "versionCode": 21,
+  "versionName": "1.20",
   "apkUrl": "https://green3077.github.io/location-share/location-share.apk",
-  "notes": "위치가 친구 화면에 안 뜨던 문제를 고쳤습니다(위치 저장 방식 수정). v1.17 이상은 앱 안의 '업데이트 확인'으로 바로 설치됩니다. v1.16 이하는 기존 앱을 삭제한 뒤 설치해주세요."
+  "notes": "내 위치가 아예 안 올라가던 문제를 고쳤습니다(앱 내부 연결 파일 누락). 꼭 업데이트해주세요. v1.17 이상은 앱 안의 '업데이트 확인'으로 바로 설치됩니다. v1.16 이하는 기존 앱을 삭제한 뒤 설치해주세요."
 }
