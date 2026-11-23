@@ -6,8 +6,8 @@ window.addEventListener("error", (e) => {
   } catch (ignored) {}
 });
 
-const APP_VERSION_CODE = 19; // android/app/build.gradle의 versionCode와 항상 같이 올릴 것
-const APP_VERSION_NAME = "1.18";
+const APP_VERSION_CODE = 20; // android/app/build.gradle의 versionCode와 항상 같이 올릴 것
+const APP_VERSION_NAME = "1.19";
 const UPDATE_MANIFEST_URL = "https://green3077.github.io/location-share/version.json";
 
 const GATE_KEY = "ls_gate_v1";
@@ -653,7 +653,7 @@ async function pollAwaitingFreshLocation(memberId, baselineUpdatedAt, deadline) 
   try {
     const url = `${firebaseConfig.databaseURL}/groups/${encodeURIComponent(profile.groupCode)}/members/${encodeURIComponent(memberId)}.json?t=${Date.now()}`;
     const res = await fetch(url);
-    const data = await res.json();
+    const data = normalizeMember(await res.json());
     if (myGeneration !== groupListenGeneration) return; // 응답 오는 사이 그룹이 바뀌었으면 버린다
     if (data) {
       lastMembersData = { ...lastMembersData, [memberId]: data };
@@ -930,7 +930,30 @@ async function refreshOnForeground() {
 let lastMembersData = {};
 let previousOnlineStatus = {}; // memberId -> 지난 렌더링에서 온라인(회색이 아니었는지) 여부
 
+// v1.17~1.18의 POST 우회가 서버에서 PATCH로 처리되지 않았다면, 위치가 members/{id} 바로 아래가
+// 아니라 그 밑의 자동 생성 자식(-Nxxxx...)에 쌓였을 수 있다. 그런 경우 가장 최근 자식의 위치를
+// 그 사람의 위치로 본다 - 이미 그렇게 저장된 데이터도 화면에는 제대로 보이게 하기 위함.
+function normalizeMember(m) {
+  if (!m || typeof m !== "object") return m;
+  let best = null;
+  Object.keys(m).forEach((k) => {
+    const c = m[k];
+    if (k.charAt(0) === "-" && c && typeof c === "object" && typeof c.lat === "number" && typeof c.lng === "number") {
+      if (!best || (c.updatedAt || 0) > (best.updatedAt || 0)) best = c;
+    }
+  });
+  if (!best || (typeof m.lat === "number" && (m.updatedAt || 0) >= (best.updatedAt || 0))) return m;
+  return Object.assign({}, m, {
+    name: m.name || best.name,
+    lat: best.lat,
+    lng: best.lng,
+    accuracy: best.accuracy,
+    updatedAt: best.updatedAt,
+  });
+}
+
 function renderMembers(data) {
+  data = Object.fromEntries(Object.entries(data || {}).map(([id, m]) => [id, normalizeMember(m)]));
   lastMembersData = data;
   maybeLogConnectionStatuses(false);
   const listEl = $("#memberList");
@@ -1347,22 +1370,31 @@ function maybeWriteLocationHistory(lat, lng, accuracy) {
 // 안정적으로 위치가 기록된다 (SDK의 웹소켓 연결은 이 우회의 혜택을 받지 못한다).
 // PATCH(v1.17): 예전엔 PUT으로 내 노드 전체를 덮어써서, 같은 노드 아래 쌓이던 위치 기록(history)과
 // 친구의 위치 요청 표시(locationRequestedAt)가 3분마다 지워졌다. 바뀌는 필드만 갱신한다.
-// (PATCH는 일부 HTTP 경로에서 지원이 들쭉날쭉해서, Firebase REST가 공식 지원하는 POST +
-// x-http-method-override=PATCH 형태로 보낸다 - 네이티브 서비스도 같은 방식.)
-function writeLocation(lat, lng, accuracy) {
-  const url = `${firebaseConfig.databaseURL}/groups/${encodeURIComponent(profile.groupCode)}/members/${encodeURIComponent(profile.memberId)}.json?x-http-method-override=PATCH`;
+// v1.19: 진짜 PATCH로 보내고(v1.17~1.18의 POST + x-http-method-override 우회는 서버가 무시하면
+// 위치가 엉뚱한 자식으로 쌓였다), 실패하면 PUT으로 한 번 더 보내 위치만큼은 반드시 남긴다.
+async function writeLocation(lat, lng, accuracy) {
+  const url = `${firebaseConfig.databaseURL}/groups/${encodeURIComponent(profile.groupCode)}/members/${encodeURIComponent(profile.memberId)}.json`;
   maybeWriteLocationHistory(lat, lng, accuracy);
-  return fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      name: profile.name,
-      lat,
-      lng,
-      accuracy,
-      updatedAt: { ".sv": "timestamp" },
-    }),
-  }).catch((err) => console.warn("writeLocation failed", err));
+  const body = JSON.stringify({
+    name: profile.name,
+    lat,
+    lng,
+    accuracy,
+    updatedAt: { ".sv": "timestamp" },
+  });
+  const headers = { "Content-Type": "application/json" };
+  try {
+    const res = await fetch(url, { method: "PATCH", headers, body });
+    if (res.ok) return;
+    throw new Error("HTTP " + res.status);
+  } catch (err) {
+    console.warn("writeLocation PATCH failed, retrying with PUT", err);
+  }
+  try {
+    await fetch(url, { method: "PUT", headers, body });
+  } catch (err) {
+    console.warn("writeLocation failed", err);
+  }
 }
 
 function removeOwnLocation() {

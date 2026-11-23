@@ -324,7 +324,12 @@ public class BootLocationForegroundService extends Service {
             body.put("accuracy", accuracy);
             body.put("updatedAt", serverTimestamp());
             // PATCH: 친구의 위치 요청 표시(locationRequestedAt)나 history 등 다른 필드는 지우지 않는다.
-            ok = requestWithRetry(base + ".json?x-http-method-override=PATCH", "PATCH", body.toString());
+            ok = requestWithRetry(base + ".json", "PATCH", body.toString());
+            if (!ok) {
+                // v1.19: PATCH가 어떤 이유로든 안 되면 예전(v1.16) 방식인 PUT으로라도 보낸다 -
+                // 위치 기록(history)은 덮어써지지만, 친구 화면에 위치가 안 뜨는 것보다 낫다.
+                ok = requestWithRetry(base + ".json", "PUT", body.toString());
+            }
         } catch (Exception ignored) {}
         if (ok) ProfileStore.setLastSentAt(ctx, System.currentTimeMillis());
 
@@ -374,12 +379,12 @@ public class BootLocationForegroundService extends Service {
     }
 
     private static int httpRequest(String urlStr, String method, String body) throws Exception {
-        // HttpURLConnection은 PATCH를 지원하지 않으므로 Firebase REST의 x-http-method-override를 쓴다.
-        String realMethod = "PATCH".equals(method) ? "POST" : method;
+        // v1.19: 안드로이드의 HttpURLConnection(OkHttp 기반)은 PATCH를 그대로 지원한다. v1.17~1.18은
+        // POST + x-http-method-override로 보냈는데, 서버가 이를 무시하면 위치가 내 노드 아래에
+        // 엉뚱한 자식으로 쌓여 친구 화면에 위치가 안 떴을 수 있다 - 그 우회를 없앴다.
         HttpURLConnection conn = (HttpURLConnection) new URL(urlStr).openConnection();
         try {
-            conn.setRequestMethod(realMethod);
-            if ("PATCH".equals(method)) conn.setRequestProperty("X-HTTP-Method-Override", "PATCH");
+            conn.setRequestMethod(method);
             conn.setConnectTimeout(15000);
             conn.setReadTimeout(15000);
             conn.setDoOutput(true);
